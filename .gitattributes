@@ -1,0 +1,19 @@
+* text=auto
+
+*.ts   text
+*.tsx  text
+*.js   text
+*.jsx  text
+*.css  text
+*.html text
+*.json text
+*.md   text
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
