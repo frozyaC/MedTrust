@@ -1,0 +1,20 @@
+name: medtrust
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: medtrust
+      POSTGRES_USER: medtrust
+      POSTGRES_PASSWORD: medtrust
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - medtrust_pgdata:/var/lib/postgresql/data
+
+volumes:
+  medtrust_pgdata:
