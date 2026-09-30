@@ -25,3 +25,6 @@ logs/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+
+__pycache__

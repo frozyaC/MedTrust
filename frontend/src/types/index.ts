@@ -27,6 +27,7 @@ export interface AnswerSection {
 export interface AnswerData {
   question: string;
   timestamp: string;
+  queryId?: string;
   personalizedPatient?: string;
   sections: AnswerSection[];
   sources: Source[];

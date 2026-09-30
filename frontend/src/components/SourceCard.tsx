@@ -49,18 +49,19 @@ export const SourceCard: React.FC<SourceCardProps> = ({ sources, highlightedId }
                 <p>«{src.quote}»</p>
               </div>
 
-              {/* Link */}
-              <div className="flex justify-end pt-1">
-                <a
-                  href={src.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#2563EB] hover:text-[#1D4ED8] hover:underline transition-colors"
-                >
-                  <span>Открыть в wiki.js</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              </div>
+              {src.url ? (
+                <div className="flex justify-end pt-1">
+                  <a
+                    href={src.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#2563EB] hover:text-[#1D4ED8] hover:underline transition-colors"
+                  >
+                    <span>Открыть в wiki.js</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              ) : null}
             </div>
           );
         })}
