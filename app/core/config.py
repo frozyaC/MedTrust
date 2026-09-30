@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     embedding_dimension: int = 1024
 
     postgres_dsn: str = "postgresql://medtrust:medtrust@localhost:5432/medtrust"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     chunk_size_chars: int = 2200
     chunk_overlap_chars: int = 250

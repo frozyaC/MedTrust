@@ -2,7 +2,7 @@
 
 Интеллектуальный справочник регистратора — система хранения, актуализации и семантического поиска по базе знаний медицинской клиники.
 
-Фронтенд и бэкенд лежат в одном дереве и пока не связаны между собой.
+Фронтенд и бэкенд лежат в одном дереве. Интерфейс регистратора ходит в `POST /api/v1/query`.
 
 ## Проблема
 
@@ -24,7 +24,28 @@
 
 ## Frontend
 
-Интерфейс регистратора находится в `frontend/` и работает на мок-данных.
+Интерфейс регистратора находится в `frontend/`
+
+## Запуск в Docker
+
+1. Скопируйте `.env.withoutkeys` в `.env` и заполните `GIGACHAT_AUTH_DATA` и `EMBEDDING_API_KEY`.
+2. Из корня репозитория:
+
+```bash
+docker compose up --build
+```
+
+- UI: `http://localhost:5173` (браузер ходит в API на `http://localhost:8000`)
+- API / Swagger: `http://localhost:8000/docs`
+
+3. Один раз проиндексируйте базу знаний:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/knowledge/reindex" \
+  -F "file=@data/sample_sufler.zip"
+```
+
+Остановка: `docker compose down`. Том Postgres (`medtrust_pgdata`) при этом сохраняется.
 
 ## Backend
 

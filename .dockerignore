@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.pyc
+.env
+.env.*
+!.env.withoutkeys
+frontend
+knowledge-base
+docs
+tests
+*.md
+.cursor
+node_modules
