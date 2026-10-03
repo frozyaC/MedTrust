@@ -1,14 +1,18 @@
 from typing import Any
+import re
 import uuid
+
 from pgvector import Vector
+
+from app.core.config import get_settings
 from app.db.database import get_connection
-from app.services.embeddings import EmbeddingClient
+from app.services.embeddings import get_embedding_client
 from app.services.ingestion import NAMESPACE, ParsedDocument, build_chunks, path_context
 
 
 class KnowledgeRepository:
     def reindex(self, documents: list[ParsedDocument]) -> dict[str, int]:
-        embedding_client = EmbeddingClient()
+        embedding_client = get_embedding_client()
         prepared: list[tuple[ParsedDocument, list[dict]]] = [
             (doc, build_chunks(doc)) for doc in documents
         ]
@@ -80,11 +84,24 @@ class KnowledgeRepository:
 
         return {"documents": document_count, "chunks": chunk_count}
 
+    @staticmethod
+    def _fts_or_query(query: str) -> str:
+        tokens = re.findall(r"[а-яёa-z0-9]+", query.lower())
+        unique = list(dict.fromkeys(tokens))
+        # Natural-language questions should not require every token to be present
+        # in one chunk. OR semantics gives FTS a chance to contribute evidence.
+        return " OR ".join(unique[:24])
+
     def hybrid_search(self, query: str, embedding: list[float], top_k: int) -> list[dict[str, Any]]:
         query_vector = Vector(embedding)
+        lexical_query = self._fts_or_query(query)
+
         with get_connection() as conn:
             sql = """
-            WITH dense AS (
+            WITH search_queries AS (
+                SELECT websearch_to_tsquery('russian', %(lexical_query)s) AS q
+            ),
+            dense AS (
                 SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> %(embedding)s) AS rnk
                 FROM knowledge_chunks
                 WHERE embedding IS NOT NULL
@@ -92,20 +109,24 @@ class KnowledgeRepository:
             ),
             lexical AS (
                 SELECT id, ROW_NUMBER() OVER (
-                    ORDER BY ts_rank_cd(search_vector, plainto_tsquery('russian', %(query)s)) DESC
+                    ORDER BY ts_rank_cd(search_vector, sq.q) DESC
                 ) AS rnk
                 FROM knowledge_chunks
-                WHERE search_vector @@ plainto_tsquery('russian', %(query)s)
-                ORDER BY ts_rank_cd(search_vector, plainto_tsquery('russian', %(query)s)) DESC
+                CROSS JOIN search_queries sq
+                WHERE numnode(sq.q) > 0
+                  AND search_vector @@ sq.q
+                ORDER BY ts_rank_cd(search_vector, sq.q) DESC
                 LIMIT %(candidates)s
             ),
             path_hits AS (
                 SELECT id, ROW_NUMBER() OVER (
-                    ORDER BY ts_rank_cd(path_vector, plainto_tsquery('russian', %(query)s)) DESC
+                    ORDER BY ts_rank_cd(path_vector, sq.q) DESC
                 ) AS rnk
                 FROM knowledge_chunks
-                WHERE path_vector @@ plainto_tsquery('russian', %(query)s)
-                ORDER BY ts_rank_cd(path_vector, plainto_tsquery('russian', %(query)s)) DESC
+                CROSS JOIN search_queries sq
+                WHERE numnode(sq.q) > 0
+                  AND path_vector @@ sq.q
+                ORDER BY ts_rank_cd(path_vector, sq.q) DESC
                 LIMIT %(candidates)s
             ),
             merged AS (
@@ -145,26 +166,17 @@ class KnowledgeRepository:
             params = {
                 "embedding": query_vector,
                 "query": query,
-                "candidates": max(top_k, 20),
+                "lexical_query": lexical_query,
+                "candidates": max(top_k, get_settings().search_candidates),
                 "top_k": top_k,
-                "dense_weight": self._weight("dense"),
-                "lexical_weight": self._weight("lexical"),
-                "path_weight": self._weight("path"),
+                "dense_weight": get_settings().dense_rrf_weight,
+                "lexical_weight": get_settings().lexical_rrf_weight,
+                "path_weight": get_settings().path_rrf_weight,
             }
             cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
             columns = [desc.name for desc in cursor.description]
             return [dict(zip(columns, row)) for row in rows]
-
-    @staticmethod
-    def _weight(kind: str) -> float:
-        from app.core.config import get_settings
-        settings = get_settings()
-        return {
-            "dense": settings.dense_rrf_weight,
-            "lexical": settings.lexical_rrf_weight,
-            "path": settings.path_rrf_weight,
-        }[kind]
 
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         with get_connection() as conn:
@@ -186,7 +198,6 @@ class KnowledgeRepository:
             return result
 
     def save_feedback(self, query_id: str, rating: str, comment: str | None) -> None:
-        # MVP: keep feedback in a small table created lazily.
         with get_connection() as conn:
             conn.execute(
                 """
@@ -204,3 +215,79 @@ class KnowledgeRepository:
                 (uuid.uuid4(), uuid.UUID(query_id), rating, comment),
             )
             conn.commit()
+
+
+class ConversationRepository:
+    def list_conversations(self, limit: int = 50) -> list[dict[str, Any]]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, title, created_at, updated_at
+                FROM conversations
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": str(row[0]),
+                "title": row[1],
+                "created_at": row[2].isoformat(),
+                "updated_at": row[3].isoformat(),
+            }
+            for row in rows
+        ]
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        with get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, title, created_at, updated_at
+                FROM conversations
+                WHERE id = %s
+                """,
+                (conversation_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": str(row[0]),
+            "title": row[1],
+            "created_at": row[2].isoformat(),
+            "updated_at": row[3].isoformat(),
+        }
+
+    def update_title(self, conversation_id: str, title: str) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE conversations SET title = %s, updated_at = NOW() WHERE id = %s",
+                (title[:120], conversation_id),
+            )
+            conn.commit()
+
+    def list_messages(self, conversation_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, role, content, query_id, sources, created_at
+                FROM chat_messages
+                WHERE conversation_id = %s
+                ORDER BY created_at ASC
+                LIMIT %s
+                """,
+                (conversation_id, limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            result.append(
+                {
+                    "id": str(row[0]),
+                    "role": row[1],
+                    "content": row[2],
+                    "query_id": str(row[3]) if row[3] else None,
+                    "sources": row[4] if isinstance(row[4], list) else [],
+                    "created_at": row[5].isoformat(),
+                }
+            )
+        return result

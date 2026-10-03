@@ -7,6 +7,7 @@ from app.core.config import get_settings
 
 
 SCHEMA_SQL = """
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS knowledge_documents (
     id UUID PRIMARY KEY,
@@ -46,6 +47,32 @@ CREATE INDEX IF NOT EXISTS knowledge_chunks_path_gin
 
 CREATE INDEX IF NOT EXISTS knowledge_chunks_document_idx
     ON knowledge_chunks (document_id);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id UUID PRIMARY KEY,
+    conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+    content TEXT NOT NULL,
+    query_id UUID,
+    sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx
+    ON chat_messages (conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS conversation_memory (
+    conversation_id UUID PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    summary TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -59,19 +86,10 @@ def get_connection():
 
 def init_db() -> None:
     settings = get_settings()
-
     with psycopg.connect(settings.postgres_dsn) as conn:
-        # Сначала включаем расширение pgvector в базе.
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         conn.commit()
-
-        # Только после этого регистрируем тип vector в psycopg.
         register_vector(conn)
-
-        sql = SCHEMA_SQL.replace(
-            "VECTOR(1024)",
-            f"VECTOR({settings.embedding_dimension})"
-        )
-
+        sql = SCHEMA_SQL.replace("VECTOR(1024)", f"VECTOR({settings.embedding_dimension})")
         conn.execute(sql)
         conn.commit()

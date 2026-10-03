@@ -1,4 +1,6 @@
 from typing import Literal
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +21,11 @@ class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     patient: PatientContext | None = None
     top_k: int = Field(default=5, ge=1, le=10)
+    conversation_id: UUID | None = None
+
+
+class CreateConversationRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
 
 
 class FeedbackRequest(BaseModel):

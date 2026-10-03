@@ -1,14 +1,17 @@
-import tempfile
-from pathlib import Path
-
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from app.db.repository import KnowledgeRepository
-from app.db.database import init_db, get_connection
-from app.schemas.api import FeedbackRequest, QueryRequest, SearchRequest
-from app.services.embeddings import EmbeddingClient
+from app.db.database import get_connection, init_db
+from app.db.repository import ConversationRepository, KnowledgeRepository
+from app.schemas.api import (
+    CreateConversationRequest,
+    FeedbackRequest,
+    QueryRequest,
+    SearchRequest,
+)
 from app.services.ingestion import parse_zip
 from app.services.rag import RagService
+from app.services.memory import ConversationMemory
+from app.services.safety import QueryScopeValidator
 
 router = APIRouter(prefix="/api/v1")
 
@@ -44,6 +47,9 @@ def reindex(file: UploadFile = File(...)) -> dict:
 @router.post("/search")
 def search(request: SearchRequest) -> dict:
     try:
+        scope = QueryScopeValidator().validate(request.query)
+        if not scope.allowed:
+            raise HTTPException(status_code=400, detail="Запрос не относится к медицинской тематике MedTrust")
         service = RagService()
         docs = service.search(
             request.query,
@@ -82,9 +88,42 @@ def query(request: QueryRequest) -> dict:
             request.question,
             request.patient.model_dump() if request.patient else None,
             request.top_k,
+            str(request.conversation_id) if request.conversation_id else None,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ошибка RAG: {exc}") from exc
+
+
+@router.post("/conversations")
+def create_conversation(request: CreateConversationRequest) -> dict:
+    conversation_id = ConversationMemory().create_conversation(request.title)
+    conversation = ConversationRepository().get_conversation(conversation_id)
+    return conversation or {"id": conversation_id, "title": request.title}
+
+
+@router.get("/conversations")
+def list_conversations(limit: int = 50) -> dict:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit должен быть от 1 до 100")
+    return {"conversations": ConversationRepository().list_conversations(limit)}
+
+
+@router.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str) -> dict:
+    conversation = ConversationRepository().get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Диалог не найден")
+    messages = ConversationRepository().list_messages(conversation_id)
+    return {**conversation, "messages": messages}
+
+
+@router.get("/conversations/{conversation_id}/messages")
+def list_conversation_messages(conversation_id: str, limit: int = 100) -> dict:
+    if not ConversationRepository().get_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="Диалог не найден")
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit должен быть от 1 до 500")
+    return {"messages": ConversationRepository().list_messages(conversation_id, limit)}
 
 
 @router.get("/knowledge/{document_id}")
