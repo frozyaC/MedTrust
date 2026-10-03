@@ -130,6 +130,9 @@ def parse_markdown(filename: str, raw_text: str) -> ParsedDocument:
 
     wiki_path = normalize_wiki_path(match.group(1))
     segments = path_segments(wiki_path)
+
+    source_url_match = re.search(r"^(?:URL|Источник|Source-URL):\s*(https?://\S+)$", raw_text, flags=re.MULTILINE | re.IGNORECASE)
+    source_url = source_url_match.group(1).strip() if source_url_match else None
     fallback_title = segments[-1] if segments else PurePosixPath(filename).stem
     title = _extract_title(raw_text, fallback_title)
 
@@ -145,7 +148,7 @@ def parse_markdown(filename: str, raw_text: str) -> ParsedDocument:
         title=title,
         wiki_path=wiki_path,
         path_segments=segments,
-        source_url=None,
+        source_url=source_url,
         content_hash=content_hash,
         sections=sections,
     )

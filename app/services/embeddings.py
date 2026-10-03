@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from openai import OpenAI
 
 from app.core.config import get_settings
@@ -27,3 +29,8 @@ class EmbeddingClient:
 
     def embed_one(self, text: str) -> list[float]:
         return self.embed([text])[0]
+
+
+@lru_cache(maxsize=1)
+def get_embedding_client() -> EmbeddingClient:
+    return EmbeddingClient()
