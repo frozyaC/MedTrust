@@ -9,20 +9,20 @@ import { StateSelector } from './components/StateSelector';
 import { Toast } from './components/Toast';
 import { MOCK_PATIENTS, MOCK_ANSWERS } from './data/mockData';
 import { Patient, ScreenState, AnswerData } from './types';
+import { askKnowledgeBase, isNoAnswer, mapQueryResponse } from './api/query';
 import { 
   Search, 
   AlertOctagon, 
   RefreshCw, 
   Sparkles, 
   FileQuestion,
-  Info
 } from 'lucide-react';
 
 export default function App() {
   const [patients] = useState<Patient[]>(MOCK_PATIENTS);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(MOCK_PATIENTS[0]);
-  const [screenState, setScreenState] = useState<ScreenState>('answer');
-  const [currentAnswer, setCurrentAnswer] = useState<AnswerData>(MOCK_ANSWERS.gastro);
+  const [screenState, setScreenState] = useState<ScreenState>('ready');
+  const [currentAnswer, setCurrentAnswer] = useState<AnswerData | null>(null);
   const [highlightedSourceId, setHighlightedSourceId] = useState<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -39,65 +39,16 @@ export default function App() {
     }
   };
 
-  // Handle question submit
-  const handleAskQuestion = (query: string) => {
+  const handleAskQuestion = async (query: string) => {
     setScreenState('loading');
-    setTimeout(() => {
-      // Create answer response
-      const answer: AnswerData = {
-        question: query,
-        timestamp: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-        sections: [
-          {
-            key: 'summary',
-            title: 'Кратко',
-            text: 'За 6–8 часов до процедуры нельзя есть, за 2 часа — пить. [1]',
-            citations: [1],
-          },
-          {
-            key: 'prep',
-            title: 'Подготовка',
-            text: 'Утром не завтракать. Можно пить воду. [2]',
-            citations: [2],
-          },
-          {
-            key: 'important',
-            title: 'Важно',
-            text: selectedPatient?.allergies.length 
-              ? `У пациента указана аллергия на ${selectedPatient.allergies.join(', ')} — сообщить врачу. [1][2]`
-              : 'При заполнении медкарты проверить аллергоанамнез. [1]',
-            citations: [1, 2],
-          },
-          {
-            key: 'contraindications',
-            title: 'Противопоказания',
-            text: selectedPatient?.contraindications.length
-              ? `У пациента противопоказания: ${selectedPatient.contraindications.join(', ')} — уточнить у профильного специалиста. [2]`
-              : 'При беременности — уточнить у гастроэнтеролога. [2]',
-            citations: [2],
-          },
-        ],
-        sources: [
-          {
-            id: 1,
-            title: 'Подготовка к гастроскопии — wiki.js',
-            wikiDate: 'обновлено 12.03.2024',
-            quote: 'За 6–8 часов до исследования исключить приём пищи...',
-            url: 'https://wiki.clinic.local/prep/gastroscopy',
-          },
-          {
-            id: 2,
-            title: 'Клинические рекомендации по ЭГДС — wiki.js',
-            wikiDate: 'обновлено 01.02.2024',
-            quote: 'Пациентам с аллергией на пенициллин необходимо сообщить...',
-            url: 'https://wiki.clinic.local/guidelines/egds',
-          },
-        ],
-      };
-
+    try {
+      const data = await askKnowledgeBase(query, selectedPatient);
+      const answer = mapQueryResponse(query, data);
       setCurrentAnswer(answer);
-      setScreenState('answer');
-    }, 1200);
+      setScreenState(isNoAnswer(data) ? 'no_answer' : 'answer');
+    } catch {
+      setScreenState('error');
+    }
   };
 
   // Scroll to citation source card
@@ -135,6 +86,9 @@ export default function App() {
           setScreenState(state);
           if (state === 'empty') setSelectedPatient(null);
           if (state === 'ready' && !selectedPatient) setSelectedPatient(MOCK_PATIENTS[0]);
+          if ((state === 'answer' || state === 'conflict') && !currentAnswer) {
+            setCurrentAnswer(MOCK_ANSWERS.gastro);
+          }
         }}
       />
 
@@ -238,7 +192,7 @@ export default function App() {
             </div>
           )}
 
-          {(screenState === 'answer' || screenState === 'conflict') && (
+          {(screenState === 'answer' || screenState === 'conflict') && currentAnswer && (
             <>
               {/* Answer block */}
               <AnswerBlock
@@ -302,7 +256,7 @@ export default function App() {
                 </p>
               </div>
               <button
-                onClick={() => setScreenState('answer')}
+                onClick={() => setScreenState('ready')}
                 className="px-4 py-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-semibold rounded-lg transition-colors shadow-xs inline-flex items-center gap-1.5"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
