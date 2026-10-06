@@ -29,7 +29,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   });
 
   return (
-    <aside className="w-[320px] bg-[#F0F7FF] border-r border-[#BFDBFE] flex flex-col shrink-0 h-[calc(100vh-64px)]">
+    <aside className="w-[320px] bg-[#F0F7FF] border-r border-[#BFDBFE] flex flex-col shrink-0 min-h-0 h-full">
       {/* Top Header */}
       <div className="p-4 border-b border-[#BFDBFE] bg-white/50 backdrop-blur-xs">
         <div className="flex items-center justify-between mb-3">
@@ -105,7 +105,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Patient Cards List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+      <div className="flex-1 overflow-y-auto px-3 pt-3 pb-6 space-y-2.5">
         {filteredPatients.length > 0 ? (
           filteredPatients.map((patient) => (
             <PatientCard

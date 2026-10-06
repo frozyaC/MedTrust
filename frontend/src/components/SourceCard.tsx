@@ -5,18 +5,27 @@ import { ExternalLink, BookOpen, Quote } from 'lucide-react';
 interface SourceCardProps {
   sources: Source[];
   highlightedId: number | null;
+  idPrefix?: string;
+  showHeader?: boolean;
 }
 
-export const SourceCard: React.FC<SourceCardProps> = ({ sources, highlightedId }) => {
+export const SourceCard: React.FC<SourceCardProps> = ({
+  sources,
+  highlightedId,
+  idPrefix = 'source',
+  showHeader = true,
+}) => {
   return (
-    <div className="space-y-3 max-w-[800px] mt-6">
-      <div className="flex items-center gap-2">
-        <BookOpen className="w-5 h-5 text-[#2563EB]" />
-        <h3 className="font-semibold text-base text-[#0F172A]">Источники</h3>
-        <span className="text-xs text-[#94A3B8] bg-[#DBEAFE] text-[#1D4ED8] px-2 py-0.5 rounded-full font-medium">
-          {sources.length} статьи wiki.js
-        </span>
-      </div>
+    <div className={`space-y-3 max-w-[800px] ${showHeader ? 'mt-6' : 'mt-3'}`}>
+      {showHeader && (
+        <div className="flex items-center gap-2">
+          <BookOpen className="w-5 h-5 text-[#2563EB]" />
+          <h3 className="font-semibold text-base text-[#0F172A]">Источники</h3>
+          <span className="text-xs text-[#94A3B8] bg-[#DBEAFE] text-[#1D4ED8] px-2 py-0.5 rounded-full font-medium">
+            {sources.length} статьи wiki.js
+          </span>
+        </div>
+      )}
 
       <div className="grid gap-3">
         {sources.map((src) => {
@@ -24,7 +33,7 @@ export const SourceCard: React.FC<SourceCardProps> = ({ sources, highlightedId }
           return (
             <div
               key={src.id}
-              id={`source-${src.id}`}
+              id={`${idPrefix}-${src.id}`}
               className={`p-4 bg-white rounded-xl border-l-4 border-l-[#2563EB] border border-[#BFDBFE] transition-all hover:shadow-md ${
                 isHighlighted ? 'ring-2 ring-[#3B82F6] bg-[#EFF6FF] shadow-sm' : ''
               }`}
@@ -43,7 +52,6 @@ export const SourceCard: React.FC<SourceCardProps> = ({ sources, highlightedId }
                 </span>
               </div>
 
-              {/* Quote block */}
               <div className="bg-[#EFF6FF] p-3 rounded-lg border border-[#DBEAFE] my-2.5 text-xs text-[#475569] flex gap-2 italic">
                 <Quote className="w-4 h-4 text-[#3B82F6] shrink-0 mt-0.5 not-italic" />
                 <p>«{src.quote}»</p>

@@ -1,4 +1,4 @@
-import { AnswerData, Patient, Source } from '../types';
+import { AnswerData, ConversationItem, Patient, Source } from '../types';
 
 export class QueryApiError extends Error {
   constructor(message: string) {
@@ -115,4 +115,36 @@ export async function askKnowledgeBase(
   }
 
   return response.json() as Promise<QueryResponse>;
+}
+
+export async function askAndBuildItem(
+  question: string,
+  patient: Patient | null,
+  id: string,
+  timestamp: string,
+): Promise<ConversationItem> {
+  try {
+    const data = await askKnowledgeBase(question, patient);
+    const answer = mapQueryResponse(question, data);
+    const noAnswer = isNoAnswer(data);
+
+    return {
+      id,
+      question,
+      timestamp,
+      status: noAnswer ? 'no_answer' : 'answer',
+      answer: noAnswer ? undefined : answer,
+      sourcesExpanded: false,
+      feedback: null,
+    };
+  } catch {
+    return {
+      id,
+      question,
+      timestamp,
+      status: 'error',
+      sourcesExpanded: false,
+      feedback: null,
+    };
+  }
 }

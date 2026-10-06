@@ -19,6 +19,7 @@ export const StateSelector: React.FC<StateSelectorProps> = ({
     { id: 'no_answer', label: '5. Ответ не найден' },
     { id: 'conflict', label: '6. Конфликт источников' },
     { id: 'error', label: '7. Ошибка wiki.js' },
+    { id: 'history', label: '8. История диалога' },
   ];
 
   return (

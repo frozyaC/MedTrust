@@ -34,11 +34,35 @@ export interface AnswerData {
   conflictWarning?: string;
 }
 
-export type ScreenState = 
-  | 'empty' 
-  | 'ready' 
-  | 'loading' 
-  | 'answer' 
-  | 'no_answer' 
-  | 'conflict' 
+/** Оценка ответа регистратором */
+export type FeedbackRating = 'useful' | 'useless';
+
+/** Статус одного сообщения в ленте диалога */
+export type ConversationStatus =
+  | 'loading'
+  | 'answer'
+  | 'no_answer'
+  | 'conflict'
   | 'error';
+
+/** Один элемент ленты: вопрос + ответ + источники + оценка */
+export interface ConversationItem {
+  id: string;
+  question: string;
+  timestamp: string;
+  status: ConversationStatus;
+  answer?: AnswerData;
+  sourcesExpanded: boolean;
+  feedback: FeedbackRating | null;
+}
+
+/** Демо-состояния экрана (переключаются через StateSelector) */
+export type ScreenState =
+  | 'empty'
+  | 'ready'
+  | 'loading'
+  | 'answer'
+  | 'no_answer'
+  | 'conflict'
+  | 'error'
+  | 'history';
