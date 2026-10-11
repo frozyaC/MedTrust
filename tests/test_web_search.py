@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 
 from app.services.safety import is_safe_domain
-from app.services.web_search import SearXNGWebSearchClient
+from app.services.web_search import (
+    SearXNGWebSearchClient,
+    WebSearchResult,
+    is_relevant_web_result,
+)
 
 
 def test_safe_domain_requires_https_and_allowlist():
@@ -27,9 +31,9 @@ def test_searxng_search_parses_and_filters_results(monkeypatch):
     payload = {
         "results": [
             {
-                "title": "PubMed result",
+                "title": "Migraine diagnosis - PubMed",
                 "url": "https://pubmed.ncbi.nlm.nih.gov/123",
-                "content": "Medical snippet",
+                "content": "Medical snippet about migraine diagnosis",
             },
             {
                 "title": "Unsafe result",
@@ -37,9 +41,9 @@ def test_searxng_search_parses_and_filters_results(monkeypatch):
                 "content": "Should be filtered",
             },
             {
-                "title": "WHO result",
+                "title": "Migraine diagnosis overview - WHO",
                 "url": "https://www.who.int/news/item",
-                "content": "WHO snippet",
+                "content": "WHO diagnostic overview about migraine",
             },
         ]
     }
@@ -174,7 +178,7 @@ def test_searxng_uses_domain_fallback_when_generic_search_has_no_results(monkeyp
                         {
                             "title": "Migraine - CKS - NICE",
                             "url": "https://cks.nice.org.uk/topics/migraine/",
-                            "content": "NICE migraine guidance.",
+                            "content": "NICE migraine diagnosis guidance.",
                         }
                     ]
                 },
@@ -219,17 +223,17 @@ def test_searxng_fallback_diversifies_authoritative_domains(monkeypatch):
             payload = {"results": []}
         elif query.startswith("site:nice.org.uk"):
             payload = {"results": [
-                {"title": "NICE 1", "url": "https://cks.nice.org.uk/a", "content": "NICE"},
-                {"title": "NICE 2", "url": "https://cks.nice.org.uk/b", "content": "NICE"},
+                {"title": "Migraine NICE 1", "url": "https://cks.nice.org.uk/a", "content": "Migraine guidance"},
+                {"title": "Migraine NICE 2", "url": "https://cks.nice.org.uk/b", "content": "Migraine guidance"},
             ]}
         elif query.startswith("site:pubmed.ncbi.nlm.nih.gov"):
             payload = {"results": [
-                {"title": "PubMed 1", "url": "https://pubmed.ncbi.nlm.nih.gov/1", "content": "PubMed"},
-                {"title": "PubMed 2", "url": "https://pubmed.ncbi.nlm.nih.gov/2", "content": "PubMed"},
+                {"title": "Migraine PubMed 1", "url": "https://pubmed.ncbi.nlm.nih.gov/1", "content": "Migraine study"},
+                {"title": "Migraine PubMed 2", "url": "https://pubmed.ncbi.nlm.nih.gov/2", "content": "Migraine study"},
             ]}
         else:
             payload = {"results": [
-                {"title": "WHO 1", "url": "https://www.who.int/1", "content": "WHO"},
+                {"title": "Migraine WHO 1", "url": "https://www.who.int/1", "content": "Migraine health report"},
             ]}
         return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
 
@@ -310,4 +314,131 @@ def test_searxng_enriches_safe_results_with_page_text(monkeypatch):
 
     assert result.status == "success"
     assert "Clinical assessment is essential." in result.results[0].snippet
-    assert "Short search snippet." not in result.results[0].snippet
+    assert "Search result snippet: Short search snippet." in result.results[0].snippet
+
+
+def test_relevance_filter_rejects_safe_but_off_topic_nice_document():
+    query = "Какие современные рекомендации по диагностике мигрени у взрослых?"
+    irrelevant = WebSearchResult(
+        title="Myalgic encephalomyelitis / chronic fatigue syndrome - NICE",
+        url=(
+            "https://www.nice.org.uk/guidance/ng206/resources/"
+            "myalgic-encephalomyelitis-chronic-fatigue-syndrome-pdf"
+        ),
+        snippet=(
+            "Recommendations on diagnosis, assessment and care planning for ME/CFS; "
+            "these recommendations were developed based on reviewed evidence."
+        ),
+        rank=1,
+        domain="www.nice.org.uk",
+    )
+    relevant = WebSearchResult(
+        title="Migraine: diagnosis - NICE CKS",
+        url="https://cks.nice.org.uk/topics/migraine/diagnosis/diagnosis/",
+        snippet="Clinical assessment and diagnosis of migraine in adults.",
+        rank=2,
+        domain="cks.nice.org.uk",
+    )
+
+    assert is_relevant_web_result(query, relevant)
+    assert not is_relevant_web_result(query, irrelevant)
+
+
+def test_searxng_returns_no_relevant_results_for_mismatched_medical_topic(monkeypatch):
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        web_safe_domains = "nice.org.uk"
+
+    calls: list[str] = []
+    bad_result = {
+        "title": "Myalgic encephalomyelitis / chronic fatigue syndrome - NICE",
+        "url": (
+            "https://www.nice.org.uk/guidance/ng206/resources/"
+            "myalgic-encephalomyelitis-chronic-fatigue-syndrome-pdf"
+        ),
+        "content": "Recommendations on diagnosis and management of ME/CFS.",
+    }
+
+    def fake_get(url, **kwargs):
+        query = kwargs["params"]["q"]
+        calls.append(query)
+        if query.startswith("site:nice.org.uk"):
+            payload = {"results": [bad_result]}
+        else:
+            payload = {"results": [bad_result]}
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+
+    result = SearXNGWebSearchClient().search(
+        "Какие современные рекомендации по диагностике мигрени у взрослых?",
+        limit=3,
+    )
+
+    assert result.status == "no_relevant_results"
+    assert result.results == []
+    assert calls == [
+        "Какие современные рекомендации по диагностике мигрени у взрослых?",
+        "site:nice.org.uk Какие современные рекомендации по диагностике мигрени у взрослых?",
+    ]
+
+
+def test_search_does_not_need_full_page_fetch_for_obviously_unrelated_result(monkeypatch):
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        web_safe_domains = "nice.org.uk"
+
+    calls: list[str] = []
+    bad_result = {
+        "title": "ME/CFS diagnosis and management - NICE",
+        "url": "https://www.nice.org.uk/guidance/ng206",
+        "content": "Diagnosis and management of chronic fatigue syndrome.",
+    }
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs["params"]["q"])
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"results": [bad_result]})
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+
+    response = SearXNGWebSearchClient().search("мигрень диагностика", limit=3)
+    assert response.status == "no_relevant_results"
+    assert response.results == []
+    assert len(calls) == 2
+
+
+def test_relevance_filter_checks_requested_type_of_information():
+    query = "Какие современные рекомендации по диагностике мигрени у взрослых?"
+    general_migraine_page = WebSearchResult(
+        title="Migraine triggers and lifestyle - NICE",
+        url="https://www.nice.org.uk/topics/migraine/lifestyle",
+        snippet="Migraine triggers, sleep patterns and lifestyle adjustments.",
+        rank=1,
+        domain="www.nice.org.uk",
+    )
+    diagnosis_page = WebSearchResult(
+        title="Migraine diagnosis - NICE CKS",
+        url="https://cks.nice.org.uk/topics/migraine/diagnosis/diagnosis/",
+        snippet="Recommendations and clinical diagnosis of migraine in adults.",
+        rank=2,
+        domain="cks.nice.org.uk",
+    )
+
+    assert not is_relevant_web_result(query, general_migraine_page)
+    assert is_relevant_web_result(query, diagnosis_page)
