@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     gigachat_base_url: str = "https://api.giga.chat/v1"
     gigachat_verify_ssl: bool = False
     gigachat_token_safety_seconds: int = 60
+    gigachat_max_tokens: int = 450
 
     embedding_api_key: str
     embedding_base_url: str = "https://foundation-models.api.cloud.ru/v1"
@@ -32,6 +33,14 @@ class Settings(BaseSettings):
     memory_recent_messages: int = 12
     memory_summary_trigger_messages: int = 12
     memory_follow_up_max_chars: int = 300
+    memory_summary_enabled: bool = False
+
+    # Per-request RAG context budget to avoid large prompt and output token usage.
+    rag_max_web_sources: int = 2
+    rag_max_wiki_sources: int = 3
+    rag_max_source_chars: int = 4200
+    rag_max_history_messages: int = 4
+    rag_max_history_message_chars: int = 600
 
     web_search_enabled: bool = True
     searxng_url: str = "http://127.0.0.1:8080"
