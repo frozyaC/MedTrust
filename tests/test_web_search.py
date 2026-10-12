@@ -4,6 +4,7 @@ from app.services.safety import is_safe_domain
 from app.services.web_search import (
     SearXNGWebSearchClient,
     WebSearchResult,
+    _fallback_search_terms,
     is_relevant_web_result,
 )
 
@@ -53,7 +54,11 @@ def test_searxng_search_parses_and_filters_results(monkeypatch):
             return SimpleNamespace(
                 raise_for_status=lambda: None,
                 headers={"content-type": "text/html"},
-                text="<html><body>Source page</body></html>",
+                text=(
+                    "<html><body><main>Migraine diagnosis recommendations for adults include assessment "
+                    "of headache characteristics, duration and associated symptoms. Consider the clinical "
+                    "context and further assessment when relevant.</main></body></html>"
+                ),
             )
         assert kwargs["params"]["format"] == "json"
         assert kwargs["params"]["language"] == "ru"
@@ -92,7 +97,8 @@ def test_searxng_uses_authority_domain_fallback(monkeypatch):
             return SimpleNamespace(
                 raise_for_status=lambda: None,
                 headers={"content-type": "text/html"},
-                text="<html><body>Source page</body></html>",
+                text=("<html><body><main>Migraine recommendations and diagnosis in adults include assessing headache "
+                      "characteristics, duration, associated symptoms, and need for further investigation.</main></body></html>"),
             )
         query = kwargs["params"]["q"]
         calls.append(query)
@@ -102,7 +108,10 @@ def test_searxng_uses_authority_domain_fallback(monkeypatch):
                     {
                         "title": "Diagnosis | Migraine - CKS - NICE",
                         "url": "https://cks.nice.org.uk/topics/migraine/diagnosis/diagnosis/",
-                        "content": "Clinical assessment is essential.",
+                        "content": (
+                            "For migraine diagnosis in adults, assess headache characteristics, associated "
+                            "symptoms and duration before considering further investigation."
+                        ),
                     }
                 ]
             }
@@ -142,8 +151,8 @@ def test_searxng_uses_authority_domain_fallback(monkeypatch):
     assert result.results[1].domain == "pubmed.ncbi.nlm.nih.gov"
     assert calls == [
         "Какие современные рекомендации по диагностике мигрени у взрослых?",
-        "site:nice.org.uk Какие современные рекомендации по диагностике мигрени у взрослых?",
-        "site:pubmed.ncbi.nlm.nih.gov Какие современные рекомендации по диагностике мигрени у взрослых?",
+        "site:nice.org.uk migraine diagnosis guidelines adults",
+        "site:pubmed.ncbi.nlm.nih.gov migraine diagnosis guidelines adults",
     ]
 
 
@@ -166,7 +175,8 @@ def test_searxng_uses_domain_fallback_when_generic_search_has_no_results(monkeyp
             return SimpleNamespace(
                 raise_for_status=lambda: None,
                 headers={"content-type": "text/html"},
-                text="<html><body>Source page</body></html>",
+                text=("<html><body><main>Migraine recommendations and diagnosis in adults include assessing headache "
+                      "characteristics, duration, associated symptoms, and need for further investigation.</main></body></html>"),
             )
         query = kwargs["params"]["q"]
         calls.append(query)
@@ -178,7 +188,10 @@ def test_searxng_uses_domain_fallback_when_generic_search_has_no_results(monkeyp
                         {
                             "title": "Migraine - CKS - NICE",
                             "url": "https://cks.nice.org.uk/topics/migraine/",
-                            "content": "NICE migraine diagnosis guidance.",
+                            "content": (
+                                "NICE guidance on migraine diagnosis: assess headache characteristics, "
+                                "duration and associated symptoms in adults."
+                            ),
                         }
                     ]
                 },
@@ -195,7 +208,7 @@ def test_searxng_uses_domain_fallback_when_generic_search_has_no_results(monkeyp
     assert result.results[0].domain == "cks.nice.org.uk"
     assert calls == [
         "мигрень диагностика",
-        "site:nice.org.uk мигрень диагностика",
+        "site:nice.org.uk migraine diagnosis",
     ]
 
 
@@ -216,24 +229,25 @@ def test_searxng_fallback_diversifies_authoritative_domains(monkeypatch):
             return SimpleNamespace(
                 raise_for_status=lambda: None,
                 headers={"content-type": "text/html"},
-                text="<html><body>Source page</body></html>",
+                text=("<html><body><main>Migraine recommendations and diagnosis in adults include assessing headache "
+                      "characteristics, duration, associated symptoms, and need for further investigation.</main></body></html>"),
             )
         query = kwargs["params"]["q"]
         if query == "мигрень":
             payload = {"results": []}
         elif query.startswith("site:nice.org.uk"):
             payload = {"results": [
-                {"title": "Migraine NICE 1", "url": "https://cks.nice.org.uk/a", "content": "Migraine guidance"},
-                {"title": "Migraine NICE 2", "url": "https://cks.nice.org.uk/b", "content": "Migraine guidance"},
+                {"title": "Migraine NICE 1", "url": "https://cks.nice.org.uk/a", "content": "Migraine guidance for adults: assess headache duration, associated symptoms and clinical warning signs in diagnosis."},
+                {"title": "Migraine NICE 2", "url": "https://cks.nice.org.uk/b", "content": "Migraine guidance for adults: assess headache duration, associated symptoms and clinical warning signs in diagnosis."},
             ]}
         elif query.startswith("site:pubmed.ncbi.nlm.nih.gov"):
             payload = {"results": [
-                {"title": "Migraine PubMed 1", "url": "https://pubmed.ncbi.nlm.nih.gov/1", "content": "Migraine study"},
-                {"title": "Migraine PubMed 2", "url": "https://pubmed.ncbi.nlm.nih.gov/2", "content": "Migraine study"},
+                {"title": "Migraine PubMed 1", "url": "https://pubmed.ncbi.nlm.nih.gov/1", "content": "Study of migraine symptoms and headache duration in adult patients, including clinical diagnosis and assessment."},
+                {"title": "Migraine PubMed 2", "url": "https://pubmed.ncbi.nlm.nih.gov/2", "content": "Study of migraine symptoms and headache duration in adult patients, including clinical diagnosis and assessment."},
             ]}
         else:
             payload = {"results": [
-                {"title": "Migraine WHO 1", "url": "https://www.who.int/1", "content": "Migraine health report"},
+                {"title": "Migraine WHO 1", "url": "https://www.who.int/1", "content": "Migraine health report for adults discussing symptoms, duration, diagnosis and clinical assessment."},
             ]}
         return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
 
@@ -387,7 +401,7 @@ def test_searxng_returns_no_relevant_results_for_mismatched_medical_topic(monkey
     assert result.results == []
     assert calls == [
         "Какие современные рекомендации по диагностике мигрени у взрослых?",
-        "site:nice.org.uk Какие современные рекомендации по диагностике мигрени у взрослых?",
+        "site:nice.org.uk migraine diagnosis guidelines adults",
     ]
 
 
@@ -442,3 +456,235 @@ def test_relevance_filter_checks_requested_type_of_information():
 
     assert not is_relevant_web_result(query, general_migraine_page)
     assert is_relevant_web_result(query, diagnosis_page)
+
+
+def test_search_finds_relevant_page_beyond_first_three_off_topic_candidates(monkeypatch):
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        web_safe_domains = "nice.org.uk"
+
+    good_url = "https://cks.nice.org.uk/topics/headache/diagnosis/"
+    bad_results = [
+        {
+            "title": "ME/CFS diagnosis and management - NICE",
+            "url": f"https://www.nice.org.uk/guidance/ng206?page={idx}",
+            "content": "Diagnosis and management of chronic fatigue syndrome.",
+        }
+        for idx in range(1, 4)
+    ]
+    payload = {"results": bad_results + [{
+        "title": "Adult headache disorders: assessment - NICE CKS",
+        "url": good_url,
+        "content": "Assessment of headache disorders in adults.",
+    }]}
+    page_fetches: list[str] = []
+
+    class Response:
+        def __init__(self, payload=None, html="", content_type="application/json"):
+            self._payload = payload
+            self.text = html
+            self.headers = {"content-type": content_type}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        if url == "http://127.0.0.1:8080/search":
+            return Response(payload=payload)
+        page_fetches.append(url)
+        return Response(
+            html=(
+                "<html><body><h1>Headache diagnosis</h1>"
+                "<p>Clinical recommendations for diagnosis of migraine in adults.</p>"
+                "</body></html>"
+            ),
+            content_type="text/html",
+        )
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+
+    result = SearXNGWebSearchClient().search(
+        "Какие современные рекомендации по диагностике мигрени у взрослых?", limit=1
+    )
+
+    assert result.status == "success"
+    assert len(result.results) == 1
+    assert result.results[0].url == good_url
+    assert page_fetches == [good_url]
+
+
+def test_search_fetches_ambiguous_headache_page_before_final_relevance_decision(monkeypatch):
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        web_safe_domains = "nice.org.uk"
+
+    page_url = "https://cks.nice.org.uk/topics/headache/assessment/"
+
+    class Response:
+        def __init__(self, payload=None, html="", content_type="application/json"):
+            self._payload = payload
+            self.text = html
+            self.headers = {"content-type": content_type}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        if url == "http://127.0.0.1:8080/search":
+            return Response(payload={"results": [{
+                "title": "Headache disorders: assessment in adults",
+                "url": page_url,
+                "content": "Guidance for assessing headache disorders.",
+            }]})
+        return Response(
+            html=(
+                "<html><body><h1>Diagnosis and assessment</h1>"
+                "<p>For adults with migraine, diagnosis is based on clinical features.</p>"
+                "<p>Recommendations for migraine assessment.</p></body></html>"
+            ),
+            content_type="text/html",
+        )
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+
+    result = SearXNGWebSearchClient().search(
+        "Какие современные рекомендации по диагностике мигрени у взрослых?", limit=1
+    )
+
+    assert result.status == "success"
+    assert result.results[0].url == page_url
+    assert "diagnosis and assessment" in result.results[0].snippet.lower()
+
+
+def test_fallback_query_terms_are_language_aware_by_domain():
+    query = "Какие современные рекомендации по диагностике мигрени у взрослых?"
+    assert _fallback_search_terms(query, "nice.org.uk") == "migraine diagnosis guidelines adults"
+    assert _fallback_search_terms(query, "cr.minzdrav.gov.ru") == query
+
+
+def test_nice_guideline_overview_is_resolved_to_recommendations_and_main_text(monkeypatch):
+    """A NICE landing page should not be used as evidence when its recommendation chapter exists."""
+
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        # Simulates an existing .env file with the old limit.
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        web_safe_domains = "nice.org.uk"
+
+    overview_url = "https://www.nice.org.uk/Guidance/CG150"
+    recommendations_url = "https://www.nice.org.uk/guidance/cg150/chapter/recommendations"
+    page_fetches: list[str] = []
+
+    class Response:
+        def __init__(self, payload=None, html="", content_type="application/json"):
+            self._payload = payload
+            self.text = html
+            self.headers = {"content-type": content_type}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        if url == "http://127.0.0.1:8080/search":
+            return Response(payload={"results": [{
+                "title": "Headaches in over 12s: diagnosis and management - NICE",
+                "url": overview_url,
+                "content": "Overview of headache diagnosis and management in young people and adults.",
+            }]})
+        page_fetches.append(url)
+        assert url == recommendations_url
+        # The page chrome contains no criteria; only the main-content region is
+        # evidence-bearing and must be passed to RAG for content review.
+        return Response(
+            html=(
+                "<html><body><nav>COOKIE NOTICE AND SITE NAVIGATION</nav>"
+                "<div class='sidebar'>Generic guideline overview only.</div>"
+                "<main id='main-content'><h1>Recommendations</h1>"
+                "<h2>Diagnosis of migraine</h2>"
+                "<p>For adults, a migraine headache typically lasts from 4 to 72 hours.</p>"
+                "<p>Consider using a headache diary for at least 8 weeks.</p>"
+                "<p>Migraine with aura may occur with or without headache.</p>"
+                "</main><footer>Cookie policy and site information</footer></body></html>"
+            ),
+            content_type="text/html",
+        )
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+
+    result = SearXNGWebSearchClient().search(
+        "Какие современные рекомендации по диагностике мигрени у взрослых?", limit=1
+    )
+
+    assert result.status == "success"
+    assert len(result.results) == 1
+    assert result.results[0].url == recommendations_url
+    assert page_fetches == [recommendations_url]
+    text = result.results[0].snippet.casefold()
+    assert "diagnosis of migraine" in text
+    assert "4 to 72 hours" in text
+    assert "headache diary" in text
+    assert "without headache" in text
+    assert "cookie notice and site navigation" not in text
+    assert "cookie policy and site information" not in text
+    assert len(result.results[0].snippet) <= 14000
+
+
+def test_answerable_web_evidence_requires_body_content_not_only_title():
+    from app.services.web_search import has_answerable_web_evidence
+
+    query = "Какие современные рекомендации по диагностике мигрени у взрослых?"
+    title_only = WebSearchResult(
+        title="Migraine diagnosis and recommendations - NICE",
+        url="https://www.nice.org.uk/guidance/migraine",
+        snippet=(
+            "NICE guideline overview. Information about our service, page navigation, related resources, "
+            "publishing history, cookies and site policies."
+        ),
+        rank=1,
+        domain="www.nice.org.uk",
+    )
+    evidence_bearing = WebSearchResult(
+        title="Headaches in over 12s: diagnosis and management - NICE",
+        url="https://www.nice.org.uk/guidance/cg150/chapter/recommendations",
+        snippet=(
+            "Recommendations for the diagnosis of migraine in adults. Migraine headache lasts 4 to 72 hours. "
+            "Consider a headache diary and assessment for headache warning signs."
+        ),
+        rank=2,
+        domain="www.nice.org.uk",
+    )
+
+    assert not has_answerable_web_evidence(query, title_only)
+    assert has_answerable_web_evidence(query, evidence_bearing)

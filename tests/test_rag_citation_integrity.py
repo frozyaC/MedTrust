@@ -25,7 +25,7 @@ def _web() -> WebSearchResult:
     )
 
 
-def test_build_prompt_excludes_wiki_citations_when_wiki_is_insufficient(monkeypatch):
+def test_build_prompt_keeps_low_score_wiki_candidates_when_wiki_is_not_strong(monkeypatch):
     class Settings:
         memory_follow_up_max_chars = 300
         web_min_wiki_dense_similarity = 0.62
@@ -42,22 +42,18 @@ def test_build_prompt_excludes_wiki_citations_when_wiki_is_insufficient(monkeypa
     )
 
     assert "WEB1" in prompt
-    assert "Нерелевантная Wiki статья" not in prompt
-    assert "[W1]" not in prompt
+    assert "Нерелевантная Wiki статья" in prompt
+    assert "[W1]" in prompt
     assert "[WEB1]" in prompt
 
 
-def test_collect_sources_excludes_wiki_when_wiki_is_insufficient():
+def test_collect_sources_keeps_wiki_candidate_even_when_match_is_not_strong(monkeypatch):
+    class Settings:
+        web_min_wiki_dense_similarity = 0.62
+    monkeypatch.setattr("app.services.rag.get_settings", lambda: Settings())
     sources = RagService._collect_sources([_doc()], [_web()], wiki_sufficient=False)
 
-    assert [source["source_id"] for source in sources] == ["WEB1"]
-
-
-def test_filter_used_sources_rejects_citation_not_in_prompt_sources():
-    sources = RagService._collect_sources([], [_web()], wiki_sufficient=False)
-
-    assert RagService._filter_used_sources("Ответ [W1].", sources) == []
-    assert RagService._filter_used_sources("Ответ [WEB1].", sources)[0]["source_id"] == "WEB1"
+    assert [source["source_id"] for source in sources] == ["W1", "WEB1"]
 
 
 def test_wiki_answerability_checks_all_hybrid_candidates(monkeypatch):
@@ -73,10 +69,10 @@ def test_wiki_answerability_checks_all_hybrid_candidates(monkeypatch):
 
     assert RagService._wiki_is_sufficient(docs) is True
     selected = RagService._wiki_sufficient_docs(docs)
-    assert [d["title"] for d in selected] == ["Релевантная статья"]
+    assert [d["title"] for d in selected] == ["Релевантная статья", "Нерелевантная Wiki статья"]
 
 
-def test_follow_up_uses_relevant_wiki_candidate_despite_noisy_top_rrf(monkeypatch):
+def test_follow_up_keeps_low_score_wiki_candidates_but_ranks_strong_match_first(monkeypatch):
     class Settings:
         web_min_wiki_dense_similarity = 0.62
 
@@ -97,10 +93,11 @@ def test_follow_up_uses_relevant_wiki_candidate_despite_noisy_top_rrf(monkeypatc
     )
 
     assert "Травматолог-ортопед" in prompt
-    assert "Нерелевантная Wiki статья" not in prompt
+    assert "Нерелевантная Wiki статья" in prompt
+    assert prompt.index("Травматолог-ортопед") < prompt.index("Нерелевантная Wiki статья")
 
 
-def test_strong_wiki_match_excludes_weaker_noisy_chunks(monkeypatch):
+def test_strong_wiki_match_ranks_weak_candidates_after_strong_chunks(monkeypatch):
     class Settings:
         web_min_wiki_dense_similarity = 0.62
 
@@ -138,7 +135,7 @@ def test_strong_wiki_match_excludes_weaker_noisy_chunks(monkeypatch):
     ]
 
     selected = RagService._wiki_sufficient_docs(docs)
-    assert [doc["chunk_id"] for doc in selected] == ["trauma-rule"]
+    assert [doc["chunk_id"] for doc in selected] == ["trauma-rule", "operation", "noisy"]
 
     prompt = RagService._build_prompt(
         "Куда записать пациента при травме 5 дней назад?",
@@ -150,11 +147,11 @@ def test_strong_wiki_match_excludes_weaker_noisy_chunks(monkeypatch):
     )
     assert "trauma-rule" not in prompt  # IDs are metadata, not evidence text.
     assert "Если травма случилась в течение 7 дней" in prompt
-    assert "Грубый пациент" not in prompt
-    assert "Консультация по операции" not in prompt
+    assert "Грубый пациент" in prompt
+    assert "Консультация по операции" in prompt
 
 
-def test_weak_hybrid_match_can_pass_only_when_no_strong_match_exists(monkeypatch):
+def test_weak_and_noisy_candidates_are_ranked_instead_of_threshold_filtered(monkeypatch):
     class Settings:
         web_min_wiki_dense_similarity = 0.62
 
@@ -176,7 +173,8 @@ def test_weak_hybrid_match_can_pass_only_when_no_strong_match_exists(monkeypatch
         },
     ]
     assert [doc["title"] for doc in RagService._wiki_sufficient_docs(docs)] == [
-        "Травматолог-ортопед"
+        "Травматолог-ортопед",
+        "Грубый пациент",
     ]
 
 
@@ -242,10 +240,6 @@ def test_false_no_data_answer_uses_evidence_fallback_without_extra_model_calls(m
 
         def chat(self, prompt):
             self.calls += 1
-            if self.calls == 1:
-                return "нужные данные не найдены"
-            if self.calls == 2:
-                return "Если пациент не обращался в больницу, его записывают в травмпункт [W1]."
             return (
                 "Если травма произошла в течение 7 дней и пациент не обращался в больницу "
                 "по этой проблеме, его записывают в травмпункт. Если он посетил врача другой "
@@ -253,13 +247,8 @@ def test_false_no_data_answer_uses_evidence_fallback_without_extra_model_calls(m
                 "в поликлинику [W1]."
             )
 
-    class FakeScope:
-        def validate(self, question):
-            return SimpleNamespace(allowed=True)
-
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
-    service.scope = FakeScope()
     service.gigachat = FakeGigaChat()
     service.web_search = SimpleNamespace(
         search=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Web search not expected"))
@@ -277,7 +266,8 @@ def test_false_no_data_answer_uses_evidence_fallback_without_extra_model_calls(m
     assert result["retrieval"][0]["eligible_for_answer"] is True
     audit = result["answer_review_diagnostics"]
     assert audit["status"] == "passed"
-    assert audit["stage"] == "single_pass_deterministic_checks_passed"
+    assert audit["stage"] == "citation_match_observed_non_blocking"
+    assert audit["review_mode"] == "non_blocking_diagnostics_only"
     assert audit["attempts"]["citation_retry"] == 0
     assert audit["attempts"]["quality_review"] == 0
     assert audit["attempts"]["content_repair"] == 0
@@ -304,10 +294,10 @@ def test_extract_fallback_returns_strong_wiki_evidence_with_valid_citation(monke
 
     assert "запись в травмпункт" in answer
     assert "[W1]" in answer
-    assert RagService._filter_used_sources(answer, sources)[0]["source_id"] == "W1"
+    assert sources[0]["citation"] == "[W1]"
 
 
-def test_rag_defensively_rejects_irrelevant_web_source(monkeypatch):
+def test_rag_ignores_irrelevant_web_source_but_still_returns_model_answer(monkeypatch):
     from app.services.web_search import WebSearchResponse
 
     class Settings:
@@ -343,9 +333,19 @@ def test_rag_defensively_rejects_irrelevant_web_source(monkeypatch):
         domain="www.nice.org.uk",
     )
 
+    class FakeGigaChat:
+        last_usage = {}
+        def __init__(self):
+            self.calls = 0
+            self.prompt = ""
+        def chat(self, prompt):
+            self.calls += 1
+            self.prompt = prompt
+            return "Могу дать общий справочный ответ, но в найденной базе подтверждающих материалов нет."
+
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
-    service.scope = SimpleNamespace(validate=lambda question: SimpleNamespace(allowed=True))
+    service.gigachat = FakeGigaChat()
     service.search = lambda question, patient, top_k: []
     service.web_search = SimpleNamespace(
         search=lambda *args, **kwargs: WebSearchResponse("success", [irrelevant])
@@ -355,15 +355,15 @@ def test_rag_defensively_rejects_irrelevant_web_source(monkeypatch):
         "Какие современные рекомендации по диагностике мигрени у взрослых?", None, 5
     )
 
-    assert result["answer"] == "Данных может быть недостаточно."
+    assert "общий справочный ответ" in result["answer"]
     assert result["sources"] == []
     assert result["web_search_used"] is False
     assert result["web_search_status"] == "no_relevant_results"
-    assert result["answer_review_diagnostics"]["status"] == "not_run"
-    assert result["answer_review_diagnostics"]["stage"] == "no_relevant_evidence"
+    assert result["resource_usage"]["gigachat_calls"] == 1
+    assert "из общих знаний" in service.gigachat.prompt
 
 
-def test_rag_fails_closed_without_extra_model_calls_when_criteria_are_unsupported(monkeypatch):
+def test_rag_does_not_block_answer_when_web_body_has_no_answer_evidence(monkeypatch):
     from types import SimpleNamespace
     from app.services.web_search import WebSearchResponse
 
@@ -376,47 +376,106 @@ def test_rag_fails_closed_without_extra_model_calls_when_criteria_are_unsupporte
     class FakeMemory:
         def __init__(self):
             self.messages = []
-
         def ensure_conversation(self, conversation_id):
             return conversation_id or "conversation-test"
-
         def build_context(self, conversation_id):
             return {"summary": "", "messages": []}
-
         def add_message(self, conversation_id, role, content, **kwargs):
             self.messages.append((role, content, kwargs))
-
         def all_messages_count(self, conversation_id):
             return sum(role == "user" for role, _, _ in self.messages)
-
         def update_title(self, conversation_id, title):
             pass
 
+    class FakeGigaChat:
+        last_usage = {}
+        def __init__(self):
+            self.calls = 0
+        def chat(self, prompt):
+            self.calls += 1
+            return "Подготовка к исследованию зависит от назначений клиники; уточните инструкцию у эндоскопического кабинета."
+
+    generic_body = WebSearchResult(
+        title="Migraine diagnosis and recommendations - NICE",
+        url="https://www.nice.org.uk/guidance/migraine",
+        snippet=(
+            "NICE guideline overview. Information about our service, how to navigate this page, "
+            "related resources, publishing history, cookies and site policies."
+        ),
+        rank=1,
+        domain="www.nice.org.uk",
+    )
+    service = RagService.__new__(RagService)
+    service.memory = FakeMemory()
+    service.gigachat = FakeGigaChat()
+    service.search = lambda question, patient, top_k: []
+    service.web_search = SimpleNamespace(
+        search=lambda *args, **kwargs: WebSearchResponse("success", [generic_body])
+    )
+
+    result = service.answer("Какие рекомендации по диагностике мигрени у взрослых?", None, 5)
+
+    assert "Подготовка к исследованию" in result["answer"]
+    assert result["sources"] == []
+    assert result["web_search_status"] == "no_relevant_results"
+    assert result["resource_usage"]["gigachat_calls"] == 1
+    assert service.gigachat.calls == 1
+
+
+def test_rag_does_not_block_partial_answer_for_missing_medical_checklist_items(monkeypatch):
+    from types import SimpleNamespace
+    from app.services.web_search import WebSearchResponse
+
+    class Settings:
+        web_min_wiki_dense_similarity = 0.62
+        memory_follow_up_max_chars = 300
+        rag_max_web_sources = 2
+        rag_max_source_chars = 4200
+        rag_max_history_messages = 4
+        rag_max_history_message_chars = 600
+        gigachat_max_tokens = 450
+
+    monkeypatch.setattr("app.services.rag.get_settings", lambda: Settings())
+
+    class FakeMemory:
+        def __init__(self):
+            self.messages = []
+        def ensure_conversation(self, conversation_id):
+            return conversation_id or "conversation-test"
+        def build_context(self, conversation_id):
+            return {"summary": "", "messages": []}
+        def add_message(self, conversation_id, role, content, **kwargs):
+            self.messages.append((role, content, kwargs))
+        def all_messages_count(self, conversation_id):
+            return sum(role == "user" for role, _, _ in self.messages)
+        def update_title(self, conversation_id, title):
+            pass
         def maybe_update_summary(self, conversation_id, gigachat):
             pass
 
     class FakeGigaChat:
         def __init__(self):
             self.calls = 0
-
         def chat(self, prompt):
             self.calls += 1
-            return (
-                "Мигрень с аурой устанавливается только при приступах от 4 до 72 часов, "
-                "а симптомы ауры обязательно сопровождаются головной болью [WEB1]."
-            )
+            # Deliberately partial: no diary/red-flag checklist. Source relevance and
+            # citation integrity should pass without rigid post-generation medical checks.
+            return "Для диагностики мигрени с аурой оценивают характер головной боли и неврологические симптомы [WEB1]."
 
     web_result = WebSearchResult(
-        title="NICE migraine with aura diagnosis - headaches in over 12s",
-        url="https://www.nice.org.uk/guidance/cg150",
-        snippet="Overview of headache diagnosis and management for young people aged 12 years and older and adults.",
+        title="Migraine with aura diagnosis - NICE",
+        url="https://www.nice.org.uk/guidance/cg150/chapter/recommendations",
+        snippet=(
+            "NICE recommendations for the diagnosis of migraine with aura in adults. "
+            "Typical aura symptoms may occur with or without headache. Consider clinical assessment "
+            "using headache characteristics and associated neurological symptoms."
+        ),
         rank=1,
         domain="www.nice.org.uk",
     )
 
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
-    service.scope = SimpleNamespace(validate=lambda question: SimpleNamespace(allowed=True))
     service.gigachat = FakeGigaChat()
     service.search = lambda question, patient, top_k: []
     service.web_search = SimpleNamespace(
@@ -427,26 +486,20 @@ def test_rag_fails_closed_without_extra_model_calls_when_criteria_are_unsupporte
         "Какие современные рекомендации по диагностике мигрени с аурой у взрослых?", None, 5
     )
 
-    assert service.gigachat.calls == 1  # one model call per query by default
+    assert service.gigachat.calls == 1
     assert result["resource_usage"]["gigachat_calls"] == 1
-    assert result["answer_reviewed"] is False
-    assert "Overview of headache diagnosis" in result["answer"]
+    assert "характер головной боли" in result["answer"]
     assert "[WEB1]" in result["answer"]
     assert result["sources"][0]["source_id"] == "WEB1"
-
-    # Failure is now diagnosable from the API payload instead of one generic message.
+    assert result["answer_reviewed"] is True
+    assert result["source_checks_passed"] is True
     audit = result["answer_review_diagnostics"]
-    assert audit["status"] == "failed"
-    assert audit["stage"] == "deterministic_check_failed_fallback"
+    assert audit["status"] == "passed"
+    assert audit["stage"] == "citation_match_observed_non_blocking"
+    assert audit["review_mode"] == "non_blocking_diagnostics_only"
+    assert audit["final_issues"] == []
     assert audit["attempts"]["quality_review"] == 0
     assert audit["attempts"]["content_repair"] == 0
-    assert audit["initial_issues"]
-    assert audit["reviewed_issues"] == []
-    assert audit["repaired_issues"] == []
-    assert audit["final_issues"]
-    assert audit["source_ids"] == ["WEB1"]
-    assert audit["used_source_ids"] == ["WEB1"]
-    assert audit["issue_details"]["initial"]
 
 
 
@@ -546,7 +599,6 @@ def test_diagnostic_answer_from_nice_source_passes_single_call_and_uses_compact_
 
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
-    service.scope = SimpleNamespace(validate=lambda question: SimpleNamespace(allowed=True))
     service.gigachat = FakeGigaChat()
     service.search = lambda question, patient, top_k: []
     service.web_search = SimpleNamespace(
@@ -563,7 +615,8 @@ def test_diagnostic_answer_from_nice_source_passes_single_call_and_uses_compact_
     assert result["resource_usage"]["embedding_api_calls"] == 1
     assert result["answer_reviewed"] is True
     assert result["answer_review_diagnostics"]["status"] == "passed"
-    assert result["answer_review_diagnostics"]["stage"] == "deterministic_guideline_template_passed"
+    assert result["answer_review_diagnostics"]["stage"] == "citation_match_observed_non_blocking"
+    assert result["answer_validation_mode"] == "non_blocking_diagnostics_only"
     assert result["answer_review_diagnostics"]["attempts"]["initial_generation"] is False
     assert result["answer_review_diagnostics"]["attempts"]["quality_review"] == 0
     assert "старше 12 лет" not in result["answer"]

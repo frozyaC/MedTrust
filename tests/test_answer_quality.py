@@ -1,29 +1,28 @@
 from app.services.rag import RagService
 
 
-def test_diagnostic_questions_get_a_source_grounded_completeness_rubric():
+def test_prompt_requirements_are_source_grounded_without_fixed_medical_checklist():
     requirements = RagService._answer_quality_requirements(
         "Какие современные рекомендации по диагностике мигрени у взрослых?"
     )
     text = "\n".join(requirements).casefold()
 
-    assert "клинические признаки" in text
-    assert "сопутствующие симптомы" in text
-    assert "длительность и частота" in text
-    assert "дневник" in text
-    assert "тревожные признаки" in text
+    assert "различай сведения из источников и общие знания" in text
     assert "не выдумывай" in text
+    assert "ответь на эту часть" in text
+    assert "дневник" not in text
+    assert "тревожные признаки" not in text
 
 
-def test_treatment_questions_add_safety_and_dosage_constraints():
+def test_prompt_requirements_do_not_add_special_treatment_checklist():
     requirements = RagService._answer_quality_requirements(
         "Какие препараты применяют для лечения мигрени и какие дозировки рекомендуются?"
     )
     text = "\n".join(requirements).casefold()
 
-    assert "противопоказания" in text
-    assert "дозу" in text
-    assert "не предлагай индивидуальную схему лечения" in text
+    assert "различай сведения из источников и общие знания" in text
+    assert "противопоказания" not in text
+    assert "не предлагай индивидуальную схему лечения" not in text
 
 
 def test_quality_review_prompt_treats_draft_as_untrusted_and_preserves_source_boundaries():
@@ -47,7 +46,8 @@ def test_general_question_does_not_get_diagnostic_specific_checklist():
     text = "\n".join(requirements).casefold()
 
     assert "клинические признаки и характеристики состояния" not in text
-    assert "каждый существенный медицинский тезис" in text
+    assert "различай сведения из источников и общие знания" in text
+    assert "диагностические разделы" not in text
 
 
 def test_content_check_rejects_aura_claim_that_makes_headache_mandatory():
@@ -155,10 +155,11 @@ def test_gigachat_system_instructions_enforce_source_grounding_and_scope():
     client.chat("question")
     system_prompt = captured["messages"][0]["content"].casefold()
 
-    assert "сохраняй числа, единицы" in system_prompt
-    assert "не делай головную боль обязательным условием ауры" in system_prompt
-    assert "если вопрос об взрослых — отвечай про взрослых" in system_prompt
+    assert "если переданы релевантные источники" in system_prompt
+    assert "не отказывай автоматически" in system_prompt
+    assert "явно скажи, что в базе medtrust не найдено подтверждение" in system_prompt
     assert "не ставь персональный диагноз" in system_prompt
+    assert "не выдумывай цитаты, документы или ссылки" in system_prompt
 
 
 def test_content_check_flags_substantive_claim_lines_without_local_citations():
