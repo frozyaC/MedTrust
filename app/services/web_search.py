@@ -337,6 +337,45 @@ def is_relevant_web_result(query: str, result: WebSearchResult) -> bool:
     return True
 
 
+def has_answerable_web_evidence(query: str, result: WebSearchResult) -> bool:
+    """Check whether the fetched body contains usable evidence for the query.
+
+    This is a retrieval-time check, not a medical review of the generated answer.
+    It deliberately relies on the result body/snippet rather than allowing the title
+    or URL alone to make an otherwise empty page appear answerable.
+    """
+    body = re.sub(r"\s+", " ", unquote(str(result.snippet or ""))).strip()
+    if len(body) < 80:
+        return False
+
+    query_topics = _topic_ids(query)
+    body_topics = _topic_ids(body)
+    if query_topics and not query_topics.intersection(body_topics):
+        return False
+
+    # The information type is checked across the complete result by
+    # `is_relevant_web_result`; the fetched body may contain the answer without
+    # repeating words such as "diagnosis" or "recommendation" in every paragraph.
+
+    # For unknown topics, require actual terms from the question in the content,
+    # not just in navigation/title metadata. Known topic+intent pairs are already
+    # specific enough once both are present in the body.
+    if not query_topics:
+        query_terms = _meaningful_terms(query)
+        body_terms = _meaningful_terms(body)
+        required_overlap = 2 if len(query_terms) >= 5 else 1
+        if len(query_terms & body_terms) < required_overlap:
+            return False
+
+    # Reject common search-page boilerplate when it has no evidence-bearing detail.
+    non_boilerplate = re.sub(
+        r"(?i)(home|you are here|back to top|cookie policy|privacy policy|read more|learn more|"
+        r"search result snippet|site navigation|all rights reserved)",
+        " ", body,
+    )
+    return len(re.sub(r"[^a-zа-яё0-9]", "", non_boilerplate, flags=re.I)) >= 60
+
+
 def _metadata_may_be_relevant(query: str, result: WebSearchResult) -> bool:
     """Pre-filter only obvious mismatches before fetching the safe page.
 
@@ -635,8 +674,14 @@ class SearXNGWebSearchClient:
             key=lambda item: (not is_relevant_web_result(query, item), item.rank)
         )
         enriched = self._enrich_results(viable[:max(1, max_fetch)], query=query)
-        relevant = [item for item in enriched if is_relevant_web_result(query, item)]
-        # Restore provider order among equally relevant results for predictable output.
+        relevant = [
+            item for item in enriched
+            if is_relevant_web_result(query, item)
+            and has_answerable_web_evidence(query, item)
+        ]
+        # Both checks are retrieval-time filters: topic/intent relevance and the
+        # presence of usable source text. The generated answer is not run through
+        # a rigid medical-topic validator after generation.
         return sorted(relevant, key=lambda item: item.rank)
 
     def search(self, query: str, limit: int = 3) -> WebSearchResponse:
