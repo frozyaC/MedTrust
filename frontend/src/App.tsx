@@ -22,7 +22,7 @@ import {
   Patient,
   ScreenState,
 } from './types';
-import { askAndBuildItem } from './api/query';
+import { QueryApiError, askAndBuildItem, loadConversationItems } from './api/query';
 import {
   AlertOctagon,
   FileQuestion,
@@ -33,8 +33,34 @@ import {
 } from 'lucide-react';
 
 type Threads = Record<string, ConversationItem[]>;
+type ConversationIds = Record<string, string>;
 
 const UNASSIGNED_THREAD = 'unassigned';
+const CONVERSATION_IDS_STORAGE_KEY = 'medtrust.conversationIds';
+
+function readStoredConversationIds(): ConversationIds {
+  try {
+    const raw = window.localStorage.getItem(CONVERSATION_IDS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0,
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredConversationIds(ids: ConversationIds) {
+  try {
+    window.localStorage.setItem(CONVERSATION_IDS_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // Private mode or quota: keep ids in memory for this tab only.
+  }
+}
 
 const now = () =>
   new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -141,6 +167,7 @@ export default function App() {
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(MOCK_PATIENTS[0]);
   const [screenState, setScreenState] = useState<ScreenState>('ready');
   const [threads, setThreads] = useState<Threads>({});
+  const [conversationIds, setConversationIds] = useState<ConversationIds>(readStoredConversationIds);
   const [highlightedSource, setHighlightedSource] = useState<{
     answerId: string;
     sourceId: number;
@@ -165,6 +192,63 @@ export default function App() {
     }
   }, [currentThread.length, latestItem?.status, hasThread]);
 
+  const dropConversationIds = (...keys: string[]) => {
+    setConversationIds((current) => {
+      const next = { ...current };
+      for (const key of keys) {
+        delete next[key];
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    writeStoredConversationIds(conversationIds);
+  }, [conversationIds]);
+
+  useEffect(() => {
+    const key = threadKey;
+    const conversationId = conversationIds[key];
+    if (!conversationId) return;
+
+    let cancelled = false;
+    void loadConversationItems(conversationId)
+      .then((items) => {
+        if (cancelled) return;
+        let applied = false;
+        setThreads((current) => {
+          if ((current[key] ?? []).length > 0) return current;
+          applied = true;
+          if (items.length === 0) return current;
+          return {
+            ...current,
+            [key]: items.map((item, index) =>
+              index === items.length - 1 ? { ...item, sourcesExpanded: true } : item,
+            ),
+          };
+        });
+        if (!applied || items.length === 0) return;
+        const last = items[items.length - 1];
+        setScreenState(
+          last.status === 'no_answer'
+            ? 'no_answer'
+            : last.status === 'error'
+              ? 'error'
+              : 'answer',
+        );
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof QueryApiError && error.status === 404) {
+          dropConversationIds(key);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [threadKey, conversationIds]);
+
   const setCurrentThread = (updater: (items: ConversationItem[]) => ConversationItem[]) => {
     setThreads((current) => ({
       ...current,
@@ -179,6 +263,7 @@ export default function App() {
         delete next[UNASSIGNED_THREAD];
         return next;
       });
+      dropConversationIds(UNASSIGNED_THREAD);
       setSelectedPatient(patient);
       const patientThread = threads[patient.id] ?? [];
       setScreenState(patientThread.length ? 'answer' : 'ready');
@@ -196,6 +281,7 @@ export default function App() {
   const handleAskQuestion = (query: string) => {
     const key = threadKey;
     const patient = selectedPatient;
+    const conversationId = conversationIds[key];
     const id = `message-${Date.now()}`;
     const timestamp = now();
 
@@ -217,21 +303,26 @@ export default function App() {
     }));
     setScreenState('loading');
 
-    void askAndBuildItem(query, patient, id, timestamp).then((item) => {
-      setThreads((current) => ({
-        ...current,
-        [key]: (current[key] ?? []).map((existing) =>
-          existing.id === id ? { ...item, sourcesExpanded: true } : existing,
-        ),
-      }));
-      setScreenState(
-        item.status === 'no_answer'
-          ? 'no_answer'
-          : item.status === 'error'
-            ? 'error'
-            : 'answer',
-      );
-    });
+    void askAndBuildItem(query, patient, id, timestamp, conversationId).then(
+      ({ item, conversationId: nextConversationId }) => {
+        setThreads((current) => ({
+          ...current,
+          [key]: (current[key] ?? []).map((existing) =>
+            existing.id === id ? { ...item, sourcesExpanded: true } : existing,
+          ),
+        }));
+        if (nextConversationId) {
+          setConversationIds((current) => ({ ...current, [key]: nextConversationId }));
+        }
+        setScreenState(
+          item.status === 'no_answer'
+            ? 'no_answer'
+            : item.status === 'error'
+              ? 'error'
+              : 'answer',
+        );
+      },
+    );
   };
 
   const handleCitationClick = (answerId: string, sourceId: number) => {
@@ -273,6 +364,7 @@ export default function App() {
 
   const clearConversation = () => {
     setThreads((current) => ({ ...current, [threadKey]: [] }));
+    dropConversationIds(threadKey);
     setScreenState(selectedPatient ? 'ready' : 'empty');
     setToastMessage('Диалог очищен. Можно задать новый вопрос.');
   };
@@ -288,10 +380,12 @@ export default function App() {
     if (state === 'empty') {
       setSelectedPatient(null);
       setThreads((current) => ({ ...current, [UNASSIGNED_THREAD]: [] }));
+      dropConversationIds(UNASSIGNED_THREAD);
       return;
     }
 
     setSelectedPatient(MOCK_PATIENTS[0]);
+    dropConversationIds(UNASSIGNED_THREAD, 'crm-1001');
     setThreads((current) => {
       const next = { ...current };
       delete next[UNASSIGNED_THREAD];

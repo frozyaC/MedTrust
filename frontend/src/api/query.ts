@@ -1,7 +1,10 @@
 import { AnswerData, ConversationItem, Patient, Source } from '../types';
 
 export class QueryApiError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
     super(message);
     this.name = 'QueryApiError';
   }
@@ -24,11 +27,48 @@ interface QuerySource {
 
 interface QueryResponse {
   query_id: string;
+  conversation_id?: string;
   answer: string;
   sources: QuerySource[];
 }
 
+interface StoredChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  query_id: string | null;
+  sources: unknown;
+  created_at: string;
+}
+
 const NO_ANSWER_TEXT = 'не найден подтверждающий источник';
+const TIME_FORMAT: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+
+function apiBaseUrl(): string {
+  return import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
+}
+
+function formatTimestamp(iso?: string): string {
+  const date = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toLocaleTimeString('ru-RU', TIME_FORMAT);
+  }
+  return date.toLocaleTimeString('ru-RU', TIME_FORMAT);
+}
+
+function toQuerySources(sources: unknown): QuerySource[] {
+  if (!Array.isArray(sources)) return [];
+  return sources.map((raw, index) => {
+    const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    return {
+      source_number: typeof source.source_number === 'number' ? source.source_number : index + 1,
+      title: typeof source.title === 'string' ? source.title : '',
+      path: typeof source.path === 'string' ? source.path : null,
+      snippet: typeof source.snippet === 'string' ? source.snippet : null,
+      url: typeof source.url === 'string' ? source.url : null,
+    };
+  });
+}
 
 export function toPatientPayload(patient: Patient | null): QueryPatientPayload | undefined {
   if (!patient) return undefined;
@@ -54,7 +94,11 @@ export function extractCitations(answer: string): { text: string; citations: num
   return { text, citations };
 }
 
-export function mapQueryResponse(question: string, data: QueryResponse): AnswerData {
+export function mapQueryResponse(
+  question: string,
+  data: QueryResponse,
+  timestamp?: string,
+): AnswerData {
   const { text, citations } = extractCitations(data.answer);
 
   const sources: Source[] = data.sources.map((source) => ({
@@ -67,7 +111,7 @@ export function mapQueryResponse(question: string, data: QueryResponse): AnswerD
 
   return {
     question,
-    timestamp: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+    timestamp: timestamp ?? formatTimestamp(),
     queryId: data.query_id,
     sections: [
       {
@@ -88,16 +132,17 @@ export function isNoAnswer(data: QueryResponse): boolean {
 export async function askKnowledgeBase(
   question: string,
   patient: Patient | null,
+  conversationId?: string,
 ): Promise<QueryResponse> {
   const patientPayload = toPatientPayload(patient);
-  const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
-  const response = await fetch(`${apiBase}/api/v1/query`, {
+  const response = await fetch(`${apiBaseUrl()}/api/v1/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       question,
       top_k: 5,
       ...(patientPayload ? { patient: patientPayload } : {}),
+      ...(conversationId ? { conversation_id: conversationId } : {}),
     }),
   });
 
@@ -111,7 +156,7 @@ export async function askKnowledgeBase(
     } catch {
       // keep status message
     }
-    throw new QueryApiError(detail);
+    throw new QueryApiError(detail, response.status);
   }
 
   return response.json() as Promise<QueryResponse>;
@@ -122,29 +167,113 @@ export async function askAndBuildItem(
   patient: Patient | null,
   id: string,
   timestamp: string,
-): Promise<ConversationItem> {
+  conversationId?: string,
+): Promise<{ item: ConversationItem; conversationId?: string }> {
   try {
-    const data = await askKnowledgeBase(question, patient);
-    const answer = mapQueryResponse(question, data);
+    const data = await askKnowledgeBase(question, patient, conversationId);
+    const answer = mapQueryResponse(question, data, timestamp);
     const noAnswer = isNoAnswer(data);
 
     return {
-      id,
-      question,
-      timestamp,
-      status: noAnswer ? 'no_answer' : 'answer',
-      answer: noAnswer ? undefined : answer,
-      sourcesExpanded: false,
-      feedback: null,
+      item: {
+        id,
+        question,
+        timestamp,
+        status: noAnswer ? 'no_answer' : 'answer',
+        answer: noAnswer ? undefined : answer,
+        sourcesExpanded: false,
+        feedback: null,
+      },
+      conversationId: data.conversation_id,
     };
   } catch {
     return {
-      id,
-      question,
-      timestamp,
-      status: 'error',
-      sourcesExpanded: false,
-      feedback: null,
+      item: {
+        id,
+        question,
+        timestamp,
+        status: 'error',
+        sourcesExpanded: false,
+        feedback: null,
+      },
     };
   }
+}
+
+function itemFromUserMessage(user: StoredChatMessage): ConversationItem {
+  return {
+    id: user.id,
+    question: user.content,
+    timestamp: formatTimestamp(user.created_at),
+    status: 'error',
+    sourcesExpanded: false,
+    feedback: null,
+  };
+}
+
+function itemFromPair(user: StoredChatMessage, assistant: StoredChatMessage): ConversationItem {
+  const data: QueryResponse = {
+    query_id: assistant.query_id ?? user.query_id ?? user.id,
+    answer: assistant.content,
+    sources: toQuerySources(assistant.sources),
+  };
+  const noAnswer = isNoAnswer(data);
+  const timestamp = formatTimestamp(assistant.created_at || user.created_at);
+
+  return {
+    id: assistant.id,
+    question: user.content,
+    timestamp,
+    status: noAnswer ? 'no_answer' : 'answer',
+    answer: noAnswer ? undefined : mapQueryResponse(user.content, data, timestamp),
+    sourcesExpanded: false,
+    feedback: null,
+  };
+}
+
+export function messagesToConversationItems(messages: StoredChatMessage[]): ConversationItem[] {
+  const items: ConversationItem[] = [];
+  let pendingUser: StoredChatMessage | null = null;
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      if (pendingUser) items.push(itemFromUserMessage(pendingUser));
+      pendingUser = message;
+      continue;
+    }
+    if (message.role === 'assistant' && pendingUser) {
+      items.push(itemFromPair(pendingUser, message));
+      pendingUser = null;
+    }
+  }
+
+  if (pendingUser) items.push(itemFromUserMessage(pendingUser));
+  return items;
+}
+
+export async function loadConversationItems(conversationId: string): Promise<ConversationItem[]> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBaseUrl()}/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+    );
+  } catch {
+    throw new QueryApiError('Не удалось загрузить историю диалога');
+  }
+
+  if (!response.ok) {
+    let detail = `Ошибка загрузки истории: ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === 'string') {
+        detail = payload.detail;
+      }
+    } catch {
+      // keep status message
+    }
+    throw new QueryApiError(detail, response.status);
+  }
+
+  const payload = (await response.json()) as { messages?: StoredChatMessage[] };
+  return messagesToConversationItems(payload.messages ?? []);
 }
