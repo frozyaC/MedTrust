@@ -108,7 +108,7 @@ def test_gastroscopy_query_reaches_wiki_retrieval_and_answer_generation(monkeypa
 
     result = service.answer("Как подготовиться к гастроскопии", None, 5)
 
-    assert search_calls == [("Как подготовиться к гастроскопии", None, 5)]
+    assert search_calls == [("Как подготовиться к гастроскопии", None, 15)]
     assert result["answer"].startswith("Подготовка к гастроскопии")
     assert result["retrieval"][0]["title"] == "Подготовка к гастроскопии"
     assert result["sources"][0]["title"] == "Подготовка к гастроскопии"

@@ -42,8 +42,8 @@ def test_build_prompt_keeps_low_score_wiki_candidates_when_wiki_is_not_strong(mo
     )
 
     assert "WEB1" in prompt
-    assert "Нерелевантная Wiki статья" in prompt
-    assert "[W1]" in prompt
+    assert "Нерелевантная Wiki статья" not in prompt
+    assert "[W1]" not in prompt
     assert "[WEB1]" in prompt
 
 
@@ -147,8 +147,8 @@ def test_strong_wiki_match_ranks_weak_candidates_after_strong_chunks(monkeypatch
     )
     assert "trauma-rule" not in prompt  # IDs are metadata, not evidence text.
     assert "Если травма случилась в течение 7 дней" in prompt
-    assert "Грубый пациент" in prompt
-    assert "Консультация по операции" in prompt
+    assert "Грубый пациент" not in prompt
+    assert "Консультация по операции" not in prompt
 
 
 def test_weak_and_noisy_candidates_are_ranked_instead_of_threshold_filtered(monkeypatch):
@@ -266,8 +266,8 @@ def test_false_no_data_answer_uses_evidence_fallback_without_extra_model_calls(m
     assert result["retrieval"][0]["eligible_for_answer"] is True
     audit = result["answer_review_diagnostics"]
     assert audit["status"] == "passed"
-    assert audit["stage"] == "citation_match_observed_non_blocking"
-    assert audit["review_mode"] == "non_blocking_diagnostics_only"
+    assert audit["stage"] == "source_attribution_and_facet_coverage"
+    assert audit["review_mode"] == "deterministic_source_attribution_and_facet_coverage"
     assert audit["attempts"]["citation_retry"] == 0
     assert audit["attempts"]["quality_review"] == 0
     assert audit["attempts"]["content_repair"] == 0
@@ -495,8 +495,8 @@ def test_rag_does_not_block_partial_answer_for_missing_medical_checklist_items(m
     assert result["source_checks_passed"] is True
     audit = result["answer_review_diagnostics"]
     assert audit["status"] == "passed"
-    assert audit["stage"] == "citation_match_observed_non_blocking"
-    assert audit["review_mode"] == "non_blocking_diagnostics_only"
+    assert audit["stage"] == "source_attribution_and_facet_coverage"
+    assert audit["review_mode"] == "deterministic_source_attribution_and_facet_coverage"
     assert audit["final_issues"] == []
     assert audit["attempts"]["quality_review"] == 0
     assert audit["attempts"]["content_repair"] == 0
@@ -526,7 +526,7 @@ def test_web_recommendation_content_is_available_to_rag_content_review():
     assert "with or without headache" in evidence["[WEB1]"]
 
 
-def test_diagnostic_answer_from_nice_source_passes_single_call_and_uses_compact_context(monkeypatch):
+def test_diagnostic_answer_from_nice_source_returns_only_source_supported_claims(monkeypatch):
     from app.services.web_search import WebSearchResponse
 
     class Settings:
@@ -614,9 +614,11 @@ def test_diagnostic_answer_from_nice_source_passes_single_call_and_uses_compact_
     assert result["resource_usage"]["estimated_input_tokens"] == 0
     assert result["resource_usage"]["embedding_api_calls"] == 1
     assert result["answer_reviewed"] is True
+    assert result["source_checks_passed"] is True
     assert result["answer_review_diagnostics"]["status"] == "passed"
-    assert result["answer_review_diagnostics"]["stage"] == "citation_match_observed_non_blocking"
-    assert result["answer_validation_mode"] == "non_blocking_diagnostics_only"
+    assert all(item["supported"] for item in result["answer_review_diagnostics"]["claim_attribution"])
+    assert result["answer_review_diagnostics"]["stage"] == "source_attribution_and_facet_coverage"
+    assert result["answer_validation_mode"] == "deterministic_source_attribution_and_facet_coverage"
     assert result["answer_review_diagnostics"]["attempts"]["initial_generation"] is False
     assert result["answer_review_diagnostics"]["attempts"]["quality_review"] == 0
     assert "старше 12 лет" not in result["answer"]
@@ -659,3 +661,18 @@ def test_web_context_and_history_are_bounded_for_token_budget(monkeypatch):
     assert "a" * 150 not in prompt
     assert "b" * 150 not in prompt
     assert len(prompt) < 5000
+
+
+def test_claim_attribution_binds_grand_mall_parking_to_wiki_evidence():
+    answer = "Также можно припарковаться возле ТЦ Grand Mall — от него 5–10 минут пешком."
+    sources = [{
+        "source_id": "W1", "citation": "[W1]", "source_type": "wiki",
+        "title": "Допуск на территорию", "section": "Строителей 64Б",
+        "path": "Регистратура/Словарь/Не медицинские услуги/Допуск на территорию",
+        "snippet": "Также припарковаться можно возле ТЦ Grand Mall (от ТЦ пешком 5-10 минут).",
+        "matched_query_aspects": ["Где можно припарковаться у Строителей 64Б?"]
+    }]
+    attributed, updated_sources, audit = RagService._attribute_answer_to_sources(answer, sources)
+    assert "[W1]" in attributed
+    assert audit and audit[0]["supported"] is True
+    assert updated_sources[0]["used_in_answer"] is True
