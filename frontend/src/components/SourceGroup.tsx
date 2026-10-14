@@ -7,7 +7,7 @@ interface SourceGroupProps {
   answer: AnswerData;
   answerId: string;
   expanded: boolean;
-  highlightedId: number | null;
+  highlightedId: string | null;
   onToggle: () => void;
 }
 

@@ -86,13 +86,13 @@ const makeDemoAnswer = (
           text: question.toLowerCase().includes('зуб')
             ? 'Да, чистить зубы утром можно.'
             : 'Уточнение учтено вместе с предыдущими сообщениями диалога.',
-          citations: [1],
+          citations: ['W1'],
         },
         {
           key: 'important',
           title: 'Важно',
           text: 'Не глотайте воду. Пить воду можно в небольшом объёме за 2 часа до исследования.',
-          citations: [2],
+          citations: ['W2'],
         },
       ]
     : [
@@ -100,13 +100,13 @@ const makeDemoAnswer = (
           key: 'summary',
           title: 'Кратко',
           text: 'За 6–8 часов до процедуры нельзя есть, за 2 часа — пить.',
-          citations: [1],
+          citations: ['W1'],
         },
         {
           key: 'prep',
           title: 'Подготовка',
           text: 'Утром не завтракать. Можно пить негазированную воду в небольшом объёме за 2 часа до исследования.',
-          citations: [2],
+          citations: ['W2'],
         },
         {
           key: 'important',
@@ -114,7 +114,7 @@ const makeDemoAnswer = (
           text: patient?.allergies.length
             ? `У пациента указана аллергия на ${patient.allergies.join(', ')} — обязательно сообщить врачу.`
             : 'При заполнении медкарты проверить аллергоанамнез.',
-          citations: [1, 2],
+          citations: ['W1', 'W2'],
         },
         {
           key: 'contraindications',
@@ -122,7 +122,7 @@ const makeDemoAnswer = (
           text: patient?.contraindications.length
             ? `У пациента противопоказания: ${patient.contraindications.join(', ')} — требуется согласование со специалистом.`
             : 'При беременности — уточнить у гастроэнтеролога.',
-          citations: [2],
+          citations: ['W2'],
         },
       ],
   sources: MOCK_ANSWERS.gastro.sources,
@@ -170,7 +170,7 @@ export default function App() {
   const [conversationIds, setConversationIds] = useState<ConversationIds>(readStoredConversationIds);
   const [highlightedSource, setHighlightedSource] = useState<{
     answerId: string;
-    sourceId: number;
+    sourceId: string;
   } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [suggestion, setSuggestion] = useState('');
@@ -325,7 +325,7 @@ export default function App() {
     );
   };
 
-  const handleCitationClick = (answerId: string, sourceId: number) => {
+  const handleCitationClick = (answerId: string, sourceId: string) => {
     setCurrentThread((items) =>
       items.map((item) =>
         item.id === answerId ? { ...item, sourcesExpanded: true } : item,
@@ -555,7 +555,7 @@ export default function App() {
                               : undefined
                           }
                           onViewConflictSources={() =>
-                            handleCitationClick(item.id, 1)
+                            handleCitationClick(item.id, 'W1')
                           }
                         />
                         <SourceGroup

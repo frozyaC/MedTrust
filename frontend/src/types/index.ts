@@ -10,9 +10,12 @@ export interface Patient {
 }
 
 export interface Source {
-  id: number;
+  id: string;
+  sourceType: 'wiki' | 'web';
+  usedInAnswer: boolean;
   title: string;
   wikiDate: string;
+  path?: string;
   quote: string;
   url: string;
 }
@@ -21,7 +24,7 @@ export interface AnswerSection {
   title: string;
   key: 'summary' | 'prep' | 'important' | 'contraindications';
   text: string;
-  citations: number[];
+  citations: string[];
 }
 
 export interface AnswerData {
@@ -32,6 +35,8 @@ export interface AnswerData {
   sections: AnswerSection[];
   sources: Source[];
   conflictWarning?: string;
+  wikiStrongMatch?: boolean;
+  usedSourceIds?: string[];
 }
 
 /** Оценка ответа регистратором */

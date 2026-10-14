@@ -18,11 +18,25 @@ interface QueryPatientPayload {
 }
 
 interface QuerySource {
-  source_number: number;
+  source_id: string;
+  source_type: 'wiki' | 'web';
   title: string;
+  section: string | null;
   path: string | null;
-  snippet: string | null;
   url: string | null;
+  snippet: string | null;
+  citation?: string;
+  used_in_answer?: boolean;
+}
+
+interface SourceEvidenceCheck {
+  wiki_strong_match?: boolean;
+  web_search_status?: string;
+}
+
+interface AnswerReviewDiagnostics {
+  source_evidence_check?: SourceEvidenceCheck;
+  used_source_ids?: string[];
 }
 
 interface QueryResponse {
@@ -30,6 +44,7 @@ interface QueryResponse {
   conversation_id?: string;
   answer: string;
   sources: QuerySource[];
+  answer_review_diagnostics?: AnswerReviewDiagnostics;
 }
 
 interface StoredChatMessage {
@@ -61,11 +76,20 @@ function toQuerySources(sources: unknown): QuerySource[] {
   return sources.map((raw, index) => {
     const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
     return {
-      source_number: typeof source.source_number === 'number' ? source.source_number : index + 1,
+      source_id:
+        typeof source.source_id === 'string'
+          ? source.source_id
+          : typeof source.source_number === 'number'
+            ? String(source.source_number)
+            : String(index + 1),
+      source_type: source.source_type === 'web' ? 'web' : 'wiki',
       title: typeof source.title === 'string' ? source.title : '',
+      section: typeof source.section === 'string' ? source.section : null,
       path: typeof source.path === 'string' ? source.path : null,
       snippet: typeof source.snippet === 'string' ? source.snippet : null,
       url: typeof source.url === 'string' ? source.url : null,
+      citation: typeof source.citation === 'string' ? source.citation : undefined,
+      used_in_answer: typeof source.used_in_answer === 'boolean' ? source.used_in_answer : undefined,
     };
   });
 }
@@ -84,13 +108,21 @@ export function toPatientPayload(patient: Patient | null): QueryPatientPayload |
   };
 }
 
-export function extractCitations(answer: string): { text: string; citations: number[] } {
-  const pattern = /\[(?:Источник\s+)?(\d+)\]/g;
+/**
+ * Извлекает ссылки на источники вида [1], [2], [W1], [W2], [WEB1], [Источник 1].
+ * Возвращает массив строк, чтобы не терять буквенные префиксы.
+ */
+export function extractCitations(answer: string): { text: string; citations: string[] } {
+  const pattern = /\[(?:Источник\s+)?([A-Za-z]*\d+)\]/g;
   const citations = [...new Set(
-    [...answer.matchAll(pattern)].map((match) => Number(match[1])),
-  )].sort((a, b) => a - b);
+    [...answer.matchAll(pattern)].map((match) => match[1]),
+  )];
 
-  const text = answer.replace(/\[(?:Источник\s+)?(\d+)\]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  const text = answer
+    .replace(/\[(?:Источник\s+)?([A-Za-z]*\d+)\]/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
   return { text, citations };
 }
 
@@ -101,13 +133,22 @@ export function mapQueryResponse(
 ): AnswerData {
   const { text, citations } = extractCitations(data.answer);
 
-  const sources: Source[] = data.sources.map((source) => ({
-    id: source.source_number,
-    title: source.title,
-    wikiDate: source.path ?? '',
-    quote: source.snippet ?? '',
-    url: source.url ?? '',
-  }));
+  const sources: Source[] = data.sources
+    .filter((source) => source.used_in_answer !== false)
+    .map((source) => ({
+      id: source.source_id,
+      sourceType: source.source_type,
+      usedInAnswer: source.used_in_answer ?? true,
+      title: source.title,
+      wikiDate: source.section ?? '',
+      path: source.path ?? '',
+      quote: source.snippet ?? '',
+      url: source.url ?? '',
+    }));
+
+  const diagnostics = data.answer_review_diagnostics;
+  const wikiStrongMatch = diagnostics?.source_evidence_check?.wiki_strong_match;
+  const usedSourceIds = diagnostics?.used_source_ids;
 
   return {
     question,
@@ -122,6 +163,8 @@ export function mapQueryResponse(
       },
     ],
     sources,
+    wikiStrongMatch,
+    usedSourceIds,
   };
 }
 

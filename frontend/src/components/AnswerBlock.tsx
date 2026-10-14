@@ -5,7 +5,7 @@ import { Sparkles, User, AlertTriangle } from 'lucide-react';
 interface AnswerBlockProps {
   answer: AnswerData;
   selectedPatient: Patient | null;
-  onCitationClick: (citationId: number) => void;
+  onCitationClick: (sourceId: string) => void;
   conflictWarning?: string;
   onViewConflictSources?: () => void;
   hideQuestion?: boolean;
@@ -58,6 +58,22 @@ export const AnswerBlock: React.FC<AnswerBlockProps> = ({
               Посмотреть источники
             </button>
           )}
+        </div>
+      )}
+
+      {answer.wikiStrongMatch === false && !conflictWarning && (
+        <div className="bg-[#FFFBEB] border-l-4 border-[#F59E0B] p-4 rounded-r-xl shadow-xs text-xs text-[#92400E] flex items-start gap-2.5">
+          <AlertTriangle className="w-5 h-5 text-[#F59E0B] shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold text-sm text-[#B45309] mb-0.5">
+              Ответ не из базы знаний
+            </p>
+            <p>
+              В базе знаний MedTrust нет точного ответа на этот вопрос.
+              Ответ основан на общих знаниях модели и не подтверждён источниками клиники.
+              Рекомендуется уточнить у профильного специалиста.
+            </p>
+          </div>
         </div>
       )}
 
