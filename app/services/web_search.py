@@ -6,7 +6,15 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from app.core.config import get_settings
-from app.services.safety import DEFAULT_SAFE_DOMAINS, is_safe_domain
+from app.services.safety import (
+    DEFAULT_SAFE_DOMAINS,
+    LOCAL_DISCOVERY_SAFE_DOMAINS,
+    WEATHER_SAFE_DOMAINS,
+    is_safe_domain,
+)
+from app.services.source_relevance import (
+    classify_source_relevance, is_weather_query, preparation_evidence_problem,
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +37,33 @@ class WebSearchResponse:
 # cover common conditions that often have different names in Russian and English.
 # Unknown topics are checked with conservative token overlap below.
 _TOPIC_PATTERNS: dict[str, tuple[str, ...]] = {
+    "ct_scan": (
+        r"(?<![a-zа-яё])ct(?:\s+scan)?(?![a-zа-яё])",
+        r"computed\s+tomograph\w*",
+        r"computerized\s+tomograph\w*",
+        r"компьютерн\w*\s+томограф\w*",
+        r"(?<![а-яё])кт(?![а-яё])",
+    ),
+    "gastroscopy": (
+        r"gastroscop\w*", r"upper\s+endoscop\w*", r"esophagogastroduodenoscop\w*",
+        r"гастроскоп\w*", r"фгдс", r"эзофагогастродуоденоскоп\w*",
+    ),
+    "biochemistry": (
+        r"biochemical\s+(?:blood\s+)?test", r"blood\s+chemistry", r"serum\s+chemistry",
+        r"биохим\w*\s+(?:анализ\w*\s+)?кров\w*", r"биохим\w*\s+анализ\w*",
+    ),
+    "preoperative_tests": (
+        r"preoperative\s+(?:blood\s+)?tests?", r"pre-?operative\s+testing", r"pre-?op\s+tests?",
+        r"предоперацион\w*\s+(?:анализ\w*|обследован\w*|исследован\w*)",
+    ),
+    "urology_tests": (
+        r"urolog\w*\s+tests?", r"urinalysis", r"urine\s+test(?:s)?", r"urological\s+investigation\w*",
+        r"уролог\w*\s+(?:анализ\w*|обследован\w*|исследован\w*)",
+    ),
+    "blood_test": (
+        r"blood\s+tests?", r"complete\s+blood\s+count", r"\bcbc\b",
+        r"анализ\w*\s+кров\w*", r"сдач\w*\s+кров\w*", r"\bоак\b",
+    ),
     "migraine": (r"мигрен\w*", r"migrain\w*"),
     "me_cfs": (
         r"myalgic\s+encephalomyelitis",
@@ -119,6 +154,17 @@ _COMPILED_TOPIC_PATTERNS = {
 }
 
 _INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "preparation": (
+        r"prepar\w*", r"fasting", r"before\s+(?:the\s+)?(?:test|scan|procedure)",
+        r"подготов\w*", r"натощак", r"перед\s+(?:сдач\w*|анализ\w*|исследован\w*|процедур\w*)",
+        r"что\s+(?:можно|нельзя|нужно)\s+(?:есть|пить|делать)\s+перед",
+        r"можно\s+ли.{0,100}(?:есть|пить|курить|поесть|покурить).{0,80}перед",
+        r"(?:поесть|покурить|курить).{0,80}перед",
+        r"eat\w*|drink\w*|avoid\s+smoking|smoking\s+before|before.{0,25}(?:scan|exam|imaging|test)",
+    ),
+    "comparison": (
+        r"compar\w*", r"differ\w*", r"difference\w*", r"чем\s+отлич\w*", r"разниц\w*", r"сравнен\w*",
+    ),
     "diagnosis": (r"diagnos\w*", r"диагност\w*", r"диагноз\w*"),
     "treatment": (
         r"treat\w*", r"therap\w*", r"management", r"лечени\w*", r"терап\w*",
@@ -181,6 +227,12 @@ _ENGLISH_SUFFIXES = ("ization", "ations", "ation", "ments", "ment", "ingly", "ed
 
 
 _TOPIC_ENGLISH_TERMS: dict[str, str] = {
+    "ct_scan": "CT scan computed tomography",
+    "gastroscopy": "gastroscopy upper endoscopy",
+    "biochemistry": "biochemical blood test blood chemistry",
+    "preoperative_tests": "preoperative tests preoperative assessment",
+    "urology_tests": "urology tests urinalysis urine test",
+    "blood_test": "blood test",
     "migraine": "migraine",
     "me_cfs": "myalgic encephalomyelitis chronic fatigue syndrome",
     "multiple_sclerosis": "multiple sclerosis",
@@ -211,6 +263,8 @@ _TOPIC_ENGLISH_TERMS: dict[str, str] = {
     "anxiety_disorder": "anxiety disorder",
 }
 _INTENT_ENGLISH_TERMS: dict[str, str] = {
+    "preparation": "preparation instructions eating drinking smoking fasting before the test",
+    "comparison": "differences purpose what tests are included",
     "diagnosis": "diagnosis",
     "treatment": "treatment",
     "recommendations": "guidelines",
@@ -241,6 +295,22 @@ def _fallback_search_terms(query: str, domain: str | None = None) -> str:
         term = _TOPIC_ENGLISH_TERMS.get(topic)
         if term:
             terms.append(term)
+
+    normalized_query = query.casefold().replace("ё", "е")
+    if "ct_scan" in topics:
+        terms.append("CT scan preparation eating drinking smoking contrast patient instructions")
+    if "gastroscopy" in topics:
+        terms.append("gastroscopy preparation fasting eating drinking smoking patient instructions")
+    if "biochemistry" in topics:
+        terms.append("before blood test fasting food smoking patient preparation")
+    if "preoperative_tests" in topics:
+        terms.append("preoperative blood tests purpose what tests are included")
+    if "urology_tests" in topics:
+        terms.append("urology investigations urine blood tests purpose")
+    if re.search(r"курен|smok", normalized_query):
+        terms.append("smoking before test")
+    if re.search(r"поест|есть|еда|пищ|eat|food|drink|пить", normalized_query):
+        terms.append("eating drinking before procedure")
 
     intents = _intent_ids(query)
     for intent in sorted(intents):
@@ -311,17 +381,48 @@ def is_relevant_web_result(query: str, result: WebSearchResult) -> bool:
         return False
 
     source_text = f"{result.title}\n{unquote(result.url)}\n{result.snippet}"
+    if is_weather_query(query):
+        assessment = classify_source_relevance(
+            query,
+            title=result.title,
+            url=result.url,
+            content=result.snippet,
+            source_type="web",
+        )
+        return assessment.label == "relevant"
+
     query_topics = _topic_ids(query)
     query_intents = _intent_ids(query)
     source_topics = _topic_ids(source_text)
     source_intents = _intent_ids(source_text)
+    # A biochemistry question must not be answered from a generic CBC/complete blood
+    # count page just because both mention blood. Keep specific laboratory classes distinct.
+    if (
+        "biochemistry" in query_topics
+        and "biochemistry" not in source_topics
+        and "preparation" in query_intents
+    ):
+        return False
     if query_topics:
-        if not query_topics.intersection(source_topics):
+        topic_matches = query_topics.intersection(source_topics)
+        if not topic_matches:
             return False
-        # Topic similarity alone can still surface a broad overview instead of
-        # the requested kind of guidance (for example symptoms instead of diagnosis).
-        if query_intents and not query_intents.intersection(source_intents):
+        # A comparison request is answered by combining evidence about its components;
+        # individual authoritative pages do not need to contain the word "difference".
+        if "comparison" not in query_intents and query_intents and not query_intents.intersection(source_intents):
             return False
+        # For procedure-preparation queries require both the named procedure and a
+        # concrete preparation cue in the source body. A page merely listing CT among
+        # unrelated tests is not an answer.
+        if "preparation" in query_intents:
+            preparation_problem = preparation_evidence_problem(
+                query,
+                title=result.title,
+                section="",
+                content=source_text,
+            )
+            if preparation_problem:
+                return False
         return True
 
     query_terms = _meaningful_terms(query)
@@ -345,11 +446,35 @@ def has_answerable_web_evidence(query: str, result: WebSearchResult) -> bool:
     or URL alone to make an otherwise empty page appear answerable.
     """
     body = re.sub(r"\s+", " ", unquote(str(result.snippet or ""))).strip()
+    if is_weather_query(query):
+        assessment = classify_source_relevance(
+            query,
+            title=result.title,
+            url=result.url,
+            content=body,
+            source_type="web",
+        )
+        has_weather_detail = bool(
+            re.search(
+                r"\d\s*°\s*[cс]?|температур|осадк|ветер|порыв|humidity|precipitation|"
+                r"wind speed|feels like|feels-like|forecast for|прогноз на",
+                body,
+                re.IGNORECASE,
+            )
+        )
+        return assessment.label == "relevant" and len(body) >= 25 and has_weather_detail
+
     if len(body) < 80:
         return False
 
     query_topics = _topic_ids(query)
     body_topics = _topic_ids(body)
+    if (
+        "biochemistry" in query_topics
+        and "biochemistry" not in body_topics
+        and "preparation" in _intent_ids(query)
+    ):
+        return False
     if query_topics and not query_topics.intersection(body_topics):
         return False
 
@@ -385,6 +510,15 @@ def _metadata_may_be_relevant(query: str, result: WebSearchResult) -> bool:
     explicitly identified condition or a clearly different intent is a mismatch.
     """
     source_text = f"{result.title}\n{unquote(result.url)}\n{result.snippet}"
+    if is_weather_query(query):
+        return classify_source_relevance(
+            query,
+            title=result.title,
+            url=result.url,
+            content=result.snippet,
+            source_type="web",
+        ).label != "irrelevant"
+
     query_topics = _topic_ids(query)
     source_topics = _topic_ids(source_text)
     query_intents = _intent_ids(query)
@@ -514,6 +648,20 @@ def _preferred_evidence_url(query: str, result: WebSearchResult) -> WebSearchRes
     return result
 
 
+
+_DINING_QUERY_RE = re.compile(
+    r"\b(?:поесть|покушать|перекус\w*|питани\w*|кафе|кофе|ресторан\w*|фудкорт\w*|"
+    r"столов\w*|кофейн\w*|где\s+поесть|места\s+для\s+питания|food|restaurant\w*|"
+    r"cafe|cafes|coffee\s+shop|eat\s+near)\b",
+    re.IGNORECASE,
+)
+
+
+def is_dining_query(query: str) -> bool:
+    """Identify local food-place discovery so it can use an appropriate safe allowlist."""
+    return bool(_DINING_QUERY_RE.search(query or ""))
+
+
 class SearXNGWebSearchClient:
     """Local SearXNG adapter with both safety and query-relevance filtering."""
 
@@ -524,7 +672,14 @@ class SearXNGWebSearchClient:
             for x in self.settings.web_safe_domains.split(",")
             if x.strip()
         }
-        self.allowed_domains = configured or DEFAULT_SAFE_DOMAINS
+        # An environment override may extend the allowlist, but must not silently
+        # remove vetted public medical sources required by procedure-preparation fallback.
+        self.allowed_domains = (
+            configured
+            | DEFAULT_SAFE_DOMAINS
+            | WEATHER_SAFE_DOMAINS
+            | LOCAL_DISCOVERY_SAFE_DOMAINS
+        )
         self.authority_domains = tuple(
             x.strip().lower()
             for x in self.settings.web_fallback_domains.split(",")
@@ -538,7 +693,11 @@ class SearXNGWebSearchClient:
                 params={
                     "q": query[:600],
                     "format": "json",
-                    "language": self.settings.web_search_language,
+                    "language": (
+                        "en" if query.lstrip().lower().startswith("site:")
+                        and not any(domain in query.lower() for domain in ("minzdrav.gov.ru", "cr.minzdrav.gov.ru"))
+                        else self.settings.web_search_language
+                    ),
                     "safesearch": 1,
                     "categories": "general",
                 },
@@ -710,9 +869,35 @@ class SearXNGWebSearchClient:
 
         # English query terms materially improve recall on English-language
         # authoritative sites (e.g. NICE and PubMed) for Russian questions.
+        normalized_query = query.casefold().replace("ё", "е")
+        preparation_or_lab_query = bool(
+            _topic_ids(query) & {"ct_scan", "gastroscopy", "biochemistry", "blood_test", "preoperative_tests", "urology_tests"}
+        ) or bool(re.search(r"подготов\w*|натощак|поест|курен|предоперацион|урологическ|biochemical|preoperative|urinalysis", normalized_query))
+        if is_weather_query(query):
+            fallback_domains = ("gismeteo.ru", "meteoinfo.ru", "rp5.ru", "weather.com", "meteoblue.com")
+        elif is_dining_query(query):
+            fallback_domains = tuple(sorted(LOCAL_DISCOVERY_SAFE_DOMAINS))
+        elif preparation_or_lab_query:
+            topics = _topic_ids(query)
+            if "ct_scan" in topics or "gastroscopy" in topics or "mri" in topics:
+                medical_preparation_domains = (
+                    "radiologyinfo.org", "nhs.uk", "medlineplus.gov", "cr.minzdrav.gov.ru",
+                    "cancer.gov", "mayoclinic.org", "msdmanuals.com", "nice.org.uk",
+                )
+            else:
+                # Lab-test questions are better served by patient test guides than by
+                # imaging sites or research-paper indexes.
+                medical_preparation_domains = (
+                    "medlineplus.gov", "labtestsonline.org.uk", "testing.com", "nhs.uk",
+                    "cr.minzdrav.gov.ru", "mayoclinic.org", "msdmanuals.com",
+                    "pubmed.ncbi.nlm.nih.gov", "who.int",
+                )
+            fallback_domains = tuple(dict.fromkeys((*medical_preparation_domains, *self.authority_domains)))
+        else:
+            fallback_domains = self.authority_domains
         max_domains = max(1, self.settings.web_fallback_max_domains)
         fallback_batches: list[list[WebSearchResult]] = []
-        for domain in self.authority_domains[:max_domains]:
+        for domain in fallback_domains[:max_domains]:
             fallback_terms = _fallback_search_terms(query, domain)
             fallback_query = f"site:{domain} {fallback_terms}"
             fallback_raw = self._request(
