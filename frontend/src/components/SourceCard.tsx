@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Source } from '../types';
-import { ExternalLink, BookOpen, Quote } from 'lucide-react';
+import { ExternalLink, BookOpen, Quote, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface SourceCardProps {
   sources: Source[];
@@ -10,6 +10,54 @@ interface SourceCardProps {
   idPrefix?: string;
   showHeader?: boolean;
 }
+
+interface ExpandableQuoteProps {
+  children: React.ReactNode;
+}
+
+const ExpandableQuote: React.FC<ExpandableQuoteProps> = ({ children }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const contentRef = React.useRef<HTMLDivElement>(null);
+
+  // Проверяем после рендера, вылезает ли контент за 4 строки (~96px)
+  React.useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    // scrollHeight > clientHeight означает, что контент обрезан
+    setIsOverflowing(el.scrollHeight > el.clientHeight + 4);
+  }, [children]);
+
+  return (
+    <div className="min-w-0 flex-1">
+      <div
+        ref={contentRef}
+        className={`overflow-hidden transition-all ${expanded ? '' : 'max-h-[100px]'}`}
+      >
+        {children}
+      </div>
+      {isOverflowing && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-[#2563EB] hover:text-[#1D4ED8] hover:underline transition-colors"
+        >
+          {expanded ? (
+            <>
+              <ChevronUp className="w-3 h-3" />
+              Свернуть
+            </>
+          ) : (
+            <>
+              <ChevronDown className="w-3 h-3" />
+              Показать полностью
+            </>
+          )}
+        </button>
+      )}
+    </div>
+  );
+};
 
 function cleanSection(section: string, title: string): string {
   if (!section) return '';
@@ -92,7 +140,10 @@ export const SourceCard: React.FC<SourceCardProps> = ({
                   </div>
                 </div>
                 {section ? (
-                  <span className="text-xs text-[#475569] shrink-0 font-medium text-right bg-[#EFF6FF] px-2 py-0.5 rounded-md border border-[#DBEAFE]">
+                  <span
+                    className="text-xs text-[#475569] shrink-0 font-medium text-right bg-[#EFF6FF] px-2 py-0.5 rounded-md border border-[#DBEAFE] max-w-[200px] truncate"
+                    title={section}
+                  >
                     {section}
                   </span>
                 ) : null}
@@ -100,7 +151,7 @@ export const SourceCard: React.FC<SourceCardProps> = ({
 
               <div className="bg-[#EFF6FF] p-3 rounded-lg border border-[#DBEAFE] my-2.5 text-xs text-[#475569] flex gap-2">
                 <Quote className="w-4 h-4 text-[#3B82F6] shrink-0 mt-0.5" />
-                <div className="min-w-0 flex-1 prose-quote">
+                <ExpandableQuote>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
@@ -178,7 +229,7 @@ export const SourceCard: React.FC<SourceCardProps> = ({
                   >
                     {src.quote}
                   </ReactMarkdown>
-                </div>
+                </ExpandableQuote>
               </div>
 
               {src.url ? (

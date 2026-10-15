@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Patient } from '../types';
 import { Search, UserCheck, AlertCircle, Sparkles, RefreshCw, X } from 'lucide-react';
 
@@ -22,11 +22,20 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   onSuggestionConsumed,
 }) => {
   const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (suggestion) {
       setQuery(suggestion);
       onSuggestionConsumed?.();
+      window.setTimeout(() => {
+        const input = inputRef.current;
+        if (input) {
+          input.focus();
+          const len = input.value.length;
+          input.setSelectionRange(len, len);
+        }
+      }, 0);
     }
   }, [suggestion, onSuggestionConsumed]);
 
@@ -90,6 +99,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       <form onSubmit={handleSubmit} className="flex gap-2">
         <div className="relative flex-1">
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}

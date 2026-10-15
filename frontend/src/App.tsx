@@ -187,12 +187,14 @@ export default function App() {
   const messageCount = currentThread.length * 2;
 
   useEffect(() => {
-    if (hasThread) {
+    if (!hasThread || !latestItem) return;
+    const el = document.getElementById(`message-${latestItem.id}`);
+    if (el) {
       requestAnimationFrame(() => {
-        threadEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
-  }, [currentThread.length, latestItem?.status, hasThread]);
+  }, [latestItem?.id, latestItem?.status, hasThread]);
 
   const dropConversationIds = (...keys: string[]) => {
     setConversationIds((current) => {
@@ -376,9 +378,10 @@ export default function App() {
 
   const clearConversation = () => {
     setThreads((current) => ({ ...current, [threadKey]: [] }));
-    dropConversationIds(threadKey);
-    setScreenState(selectedPatient ? 'ready' : 'empty');
-    setToastMessage('Диалог очищен. Можно задать новый вопрос.');
+    dropConversationIds(threadKey, UNASSIGNED_THREAD);
+    setSelectedPatient(null);
+    setScreenState('empty');
+    setToastMessage('Новый диалог. Выберите пациента и задайте вопрос.');
   };
 
   /**
@@ -516,10 +519,11 @@ export default function App() {
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     {[
-                      'Как подготовиться к гастроскопии?',
-                      'Правила сдачи крови натощак',
-                      'Противопоказания к МРТ головного мозга',
-                      'Документы для первичного приёма',
+                      'Подготовка к ',
+                      'Первичный прием',
+                      'Повторный прием',
+                      'Парковка ',
+                      'Состав анализа ',
                     ].map((preset) => (
                       <button
                         key={preset}
@@ -551,7 +555,7 @@ export default function App() {
             <MessageThread endRef={threadEndRef}>
               <SessionDivider />
               {currentThread.map((item, index) => (
-                <div key={item.id} className="space-y-4">
+                <div key={item.id} id={`message-${item.id}`} className="space-y-4 scroll-mt-4">
                   <QuestionBubble text={item.question} time={item.timestamp} />
 
                   {item.status === 'loading' && <AnswerSkeleton />}
