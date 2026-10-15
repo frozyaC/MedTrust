@@ -1,4 +1,6 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { AnswerData, Patient } from '../types';
 import { Sparkles, User, AlertTriangle } from 'lucide-react';
 
@@ -10,6 +12,26 @@ interface AnswerBlockProps {
   onViewConflictSources?: () => void;
   hideQuestion?: boolean;
   considersHistory?: boolean;
+}
+
+/**
+ * Превращает метки [W1], [W2], [WEB1], [1], [2] в markdown-ссылки с якорем:
+ *   [W1] → [W1](#citation-W1)
+ * ReactMarkdown отрендерит их как <a href="#citation-W1">, а мы в компоненте `a`
+ * перехватим href и вызовем onCitationClick.
+ */
+function linkifyCitations(text: string): string {
+  return text.replace(
+    /\[((?:Источник\s+)?[A-Za-z]*\d+)\]/g,
+    (_match, id: string) => `[${id}](#citation-${id})`,
+  );
+}
+
+function normalizeAnswerMarkdown(text: string): string {
+  return text.replace(
+    /^\s*[-*+]\s+(\*\*[^*]+\*\*:?)\s*$/gm,
+    '$1',
+  );
 }
 
 export const AnswerBlock: React.FC<AnswerBlockProps> = ({
@@ -103,26 +125,109 @@ export const AnswerBlock: React.FC<AnswerBlockProps> = ({
           </div>
         </div>
 
-        <div className="space-y-4 text-sm leading-relaxed text-[#0F172A]">
+        <div className="space-y-4 text-sm leading-relaxed text-[#0F172A] answer-markdown">
           {answer.sections.map((section, idx) => (
-            <div key={idx} className="space-y-1">
-              <h4 className="font-semibold text-[#0F172A] text-sm flex items-center gap-1.5">
-                <span className="w-1.5 h-4 bg-[#2563EB] rounded-full inline-block" />
-                <span>{section.title}</span>
-              </h4>
-              <p className="text-[#0F172A] pl-3">
-                {section.text}{' '}
-                {section.citations.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => onCitationClick(c)}
-                    className="inline-flex items-center justify-center font-bold text-xs text-[#3B82F6] hover:text-[#1D4ED8] hover:underline px-1 py-0.5 rounded bg-[#EFF6FF] border border-[#BFDBFE] mx-0.5 transition-colors cursor-pointer"
-                    title={`Перейти к источнику [${c}]`}
-                  >
-                    [{c}]
-                  </button>
-                ))}
-              </p>
+            <div key={idx}>
+              {idx > 0 && section.title && (
+                <h4 className="font-semibold text-[#0F172A] text-sm flex items-center gap-1.5 mt-2 mb-1">
+                  <span className="w-1.5 h-4 bg-[#2563EB] rounded-full inline-block" />
+                  <span>{section.title}</span>
+                </h4>
+              )}
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  p: ({ children }) => (
+                    <p className="mb-2 last:mb-0">{children}</p>
+                  ),
+                  h1: ({ children }) => (
+                    <h5 className="font-semibold text-[#0F172A] text-sm mt-3 mb-1 first:mt-0">
+                      {children}
+                    </h5>
+                  ),
+                  h2: ({ children }) => (
+                    <h5 className="font-semibold text-[#0F172A] text-sm mt-3 mb-1 first:mt-0">
+                      {children}
+                    </h5>
+                  ),
+                  h3: ({ children }) => (
+                    <h5 className="font-semibold text-[#0F172A] text-sm mt-3 mb-1 first:mt-0">
+                      {children}
+                    </h5>
+                  ),
+                  h4: ({ children }) => (
+                    <h5 className="font-semibold text-[#0F172A] text-sm mt-3 mb-1 first:mt-0">
+                      {children}
+                    </h5>
+                  ),
+                  strong: ({ children }) => (
+                    <strong className="font-semibold text-[#0F172A]">{children}</strong>
+                  ),
+                  em: ({ children }) => <em className="italic">{children}</em>,
+                  ul: ({ children }) => (
+                    <ul className="list-disc list-outside ml-5 my-2 space-y-1">{children}</ul>
+                  ),
+                  ol: ({ children }) => (
+                    <ol className="list-decimal list-outside ml-5 my-2 space-y-1">{children}</ol>
+                  ),
+                  li: ({ children }) => <li className="pl-1">{children}</li>,
+                  a: ({ href, children }) => {
+                    // Перехватываем якоря вида #citation-W1
+                    if (href && href.startsWith('#citation-')) {
+                      const sourceId = href.slice('#citation-'.length);
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => onCitationClick(sourceId)}
+                          className="inline-flex items-center justify-center font-bold text-xs text-[#3B82F6] hover:text-[#1D4ED8] hover:underline px-1 py-0.5 rounded bg-[#EFF6FF] border border-[#BFDBFE] mx-0.5 transition-colors cursor-pointer"
+                          title={`Перейти к источнику [${sourceId}]`}
+                        >
+                          [{sourceId}]
+                        </button>
+                      );
+                    }
+                    // Обычные ссылки — открываем в новой вкладке
+                    return (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#2563EB] underline hover:text-[#1D4ED8]"
+                      >
+                        {children}
+                      </a>
+                    );
+                  },
+                  code: ({ children }) => (
+                    <code className="bg-[#EFF6FF] px-1 py-0.5 rounded text-[12px] font-mono">
+                      {children}
+                    </code>
+                  ),
+                  blockquote: ({ children }) => (
+                    <blockquote className="border-l-2 border-[#3B82F6] pl-3 my-2 italic text-[#475569]">
+                      {children}
+                    </blockquote>
+                  ),
+                  table: ({ children }) => (
+                    <div className="overflow-x-auto my-2">
+                      <table className="text-xs border-collapse w-full">
+                        {children}
+                      </table>
+                    </div>
+                  ),
+                  th: ({ children }) => (
+                    <th className="border border-[#DBEAFE] bg-[#EFF6FF] px-2 py-1 text-left font-semibold">
+                      {children}
+                    </th>
+                  ),
+                  td: ({ children }) => (
+                    <td className="border border-[#DBEAFE] px-2 py-1">{children}</td>
+                  ),
+                  hr: () => <hr className="my-3 border-[#DBEAFE]" />,
+                }}
+              >
+                {linkifyCitations(normalizeAnswerMarkdown(section.text))}
+              </ReactMarkdown>
             </div>
           ))}
         </div>

@@ -108,22 +108,13 @@ export function toPatientPayload(patient: Patient | null): QueryPatientPayload |
   };
 }
 
-/**
- * Извлекает ссылки на источники вида [1], [2], [W1], [W2], [WEB1], [Источник 1].
- * Возвращает массив строк, чтобы не терять буквенные префиксы.
- */
 export function extractCitations(answer: string): { text: string; citations: string[] } {
   const pattern = /\[(?:Источник\s+)?([A-Za-z]*\d+)\]/g;
   const citations = [...new Set(
     [...answer.matchAll(pattern)].map((match) => match[1]),
   )];
-
-  const text = answer
-    .replace(/\[(?:Источник\s+)?([A-Za-z]*\d+)\]/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  return { text, citations };
+  
+  return { text: answer, citations };
 }
 
 export function mapQueryResponse(
