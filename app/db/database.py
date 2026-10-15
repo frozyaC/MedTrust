@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS conversation_memory (
     summary TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS knowledge_index_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    archive_hash TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 

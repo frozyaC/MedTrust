@@ -216,6 +216,31 @@ class KnowledgeRepository:
             )
             conn.commit()
 
+    def document_count(self) -> int:
+        with get_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()
+        return int(row[0]) if row else 0
+
+    def get_index_archive_hash(self) -> str | None:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT archive_hash FROM knowledge_index_state WHERE id = 1"
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def save_index_archive_hash(self, archive_hash: str) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO knowledge_index_state (id, archive_hash)
+                VALUES (1, %s)
+                ON CONFLICT (id)
+                DO UPDATE SET archive_hash = EXCLUDED.archive_hash, updated_at = NOW()
+                """,
+                (archive_hash,),
+            )
+            conn.commit()
+
 
 class ConversationRepository:
     def list_conversations(self, limit: int = 50) -> list[dict[str, Any]]:

@@ -1,9 +1,14 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.core.config import get_settings
 from app.db.database import init_db
+from app.db.seed import seed_knowledge_index
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="MedTrust Path-Aware RAG API",
@@ -24,3 +29,7 @@ app.include_router(router)
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    try:
+        seed_knowledge_index()
+    except Exception:
+        logger.exception("Failed to seed knowledge index")
