@@ -7,12 +7,16 @@ interface SidebarProps {
   patients: Patient[];
   selectedPatient: Patient | null;
   onSelectPatient: (patient: Patient | null) => void;
+  searchInputRef?: React.RefObject<HTMLInputElement | null>;
+  highlighted?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   patients,
   selectedPatient,
   onSelectPatient,
+  searchInputRef,
+  highlighted = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<'today' | 'my' | 'all'>('all');
@@ -29,7 +33,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   });
 
   return (
-    <aside className="w-[320px] bg-[#F0F7FF] border-r border-[#BFDBFE] flex flex-col shrink-0 min-h-0 h-full">
+    <aside
+      className={`w-[320px] bg-[#F0F7FF] border-r border-[#BFDBFE] flex flex-col shrink-0 min-h-0 h-full transition-all duration-500 ${
+        highlighted ? 'ring-2 ring-[#3B82F6] ring-inset bg-[#DBEAFE]/30' : ''
+      }`}
+    >
       {/* Top Header */}
       <div className="p-4 border-b border-[#BFDBFE] bg-white/50 backdrop-blur-xs">
         <div className="flex items-center justify-between mb-3">
@@ -53,6 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="relative mb-3">
           <Search className="w-4 h-4 text-[#94A3B8] absolute left-3 top-1/2 -translate-y-1/2" />
           <input
+            ref={searchInputRef}
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}

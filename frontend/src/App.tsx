@@ -175,6 +175,8 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [suggestion, setSuggestion] = useState('');
   const threadEndRef = useRef<HTMLDivElement>(null);
+  const sidebarSearchRef = useRef<HTMLInputElement>(null);
+  const [sidebarHighlighted, setSidebarHighlighted] = useState(false);
 
   const threadKey = selectedPatient?.id ?? UNASSIGNED_THREAD;
   const currentThread = threads[threadKey] ?? [];
@@ -273,6 +275,16 @@ export default function App() {
     setSelectedPatient(null);
     setScreenState(threads[UNASSIGNED_THREAD]?.length ? 'answer' : 'empty');
   };
+
+  const handleChangePatient = () => {
+    handleSelectPatient(null);
+    setSidebarHighlighted(true);
+    window.setTimeout(() => {
+      sidebarSearchRef.current?.focus();
+    }, 100);
+    window.setTimeout(() => setSidebarHighlighted(false), 1600);
+  };
+
 
   /**
    * Реальный запрос к бэку. Вместо setTimeout из Figma-версии —
@@ -463,6 +475,8 @@ export default function App() {
           patients={patients}
           selectedPatient={selectedPatient}
           onSelectPatient={handleSelectPatient}
+          searchInputRef={sidebarSearchRef}
+          highlighted={sidebarHighlighted}
         />
 
         {!hasThread ? (
@@ -470,10 +484,11 @@ export default function App() {
             <SearchBar
               selectedPatient={selectedPatient}
               onAsk={handleAskQuestion}
-              onSelectPatientClick={() =>
-                handleSelectPatient(selectedPatient ? null : patients[0])
-              }
+              onSelectPatientClick={handleChangePatient}
+              onClearPatient={() => handleSelectPatient(null)}
               isLoading={false}
+              suggestion={suggestion}
+              onSuggestionConsumed={() => setSuggestion('')}
             />
 
             {screenState === 'empty' && emptyContent}
@@ -508,7 +523,10 @@ export default function App() {
                     ].map((preset) => (
                       <button
                         key={preset}
-                        onClick={() => handleAskQuestion(preset)}
+                        onClick={() => {
+                          setSuggestion('');
+                          window.setTimeout(() => setSuggestion(preset), 0);
+                        }}
                         className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left"
                       >
                         + {preset}

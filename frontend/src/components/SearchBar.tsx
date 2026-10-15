@@ -1,21 +1,34 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Patient } from '../types';
-import { Search, UserCheck, AlertCircle, Sparkles, RefreshCw } from 'lucide-react';
+import { Search, UserCheck, AlertCircle, Sparkles, RefreshCw, X } from 'lucide-react';
 
 interface SearchBarProps {
   selectedPatient: Patient | null;
   onAsk: (query: string) => void;
   onSelectPatientClick: () => void;
+  onClearPatient?: () => void;
   isLoading: boolean;
+  suggestion?: string;
+  onSuggestionConsumed?: () => void;
 }
 
 export const SearchBar: React.FC<SearchBarProps> = ({
   selectedPatient,
   onAsk,
   onSelectPatientClick,
+  onClearPatient,
   isLoading,
+  suggestion,
+  onSuggestionConsumed,
 }) => {
-  const [query, setQuery] = useState('Как подготовиться к гастроскопии?');
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (suggestion) {
+      setQuery(suggestion);
+      onSuggestionConsumed?.();
+    }
+  }, [suggestion, onSuggestionConsumed]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,27 +49,41 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       {/* Patient context banner */}
       <div className="flex items-center justify-between gap-3 text-xs bg-[#EFF6FF] px-3.5 py-2.5 rounded-lg border border-[#DBEAFE]">
         {selectedPatient ? (
-          <div className="flex items-center gap-2 text-[#0F172A]">
+          <div className="flex items-center gap-2 text-[#0F172A] min-w-0 flex-1">
             <UserCheck className="w-4 h-4 text-[#2563EB] shrink-0" />
-            <span className="font-semibold text-[#2563EB]">
+            <span className="font-semibold text-[#2563EB] truncate">
               {getPatientSummaryText(selectedPatient)}
             </span>
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-[#475569]">
+          <div className="flex items-center gap-2 text-[#475569] min-w-0 flex-1">
             <AlertCircle className="w-4 h-4 text-[#F59E0B] shrink-0" />
             <span>Пациент не выбран — ответ без персонализации</span>
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={onSelectPatientClick}
-          className="text-xs font-semibold text-[#2563EB] hover:text-[#1D4ED8] hover:bg-[#DBEAFE] px-2.5 py-1 rounded-md transition-colors shrink-0 flex items-center gap-1"
-        >
-          <RefreshCw className="w-3 h-3" />
-          {selectedPatient ? 'Сменить' : 'Выбрать пациента'}
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={onSelectPatientClick}
+            className="text-xs font-semibold text-[#2563EB] hover:text-[#1D4ED8] hover:bg-[#DBEAFE] px-2.5 py-1 rounded-md transition-colors flex items-center gap-1"
+          >
+            <RefreshCw className="w-3 h-3" />
+            {selectedPatient ? 'Сменить' : 'Выбрать пациента'}
+          </button>
+
+          {selectedPatient && onClearPatient && (
+            <button
+              type="button"
+              onClick={onClearPatient}
+              className="text-[#2563EB] hover:text-[#EF4444] hover:bg-[#FEF2F2] p-1 rounded-md transition-colors shrink-0"
+              title="Снять выбор пациента"
+              aria-label="Снять выбор пациента"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Main search form */}
