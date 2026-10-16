@@ -512,31 +512,61 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-                <div className="pt-3 border-t border-[#EFF6FF]">
+                <div className="pt-3 border-t border-[#EFF6FF] space-y-4">
                   <div className="flex items-center gap-2 text-xs text-[#475569] mb-2">
                     <Sparkles className="w-3.5 h-3.5 text-[#3B82F6]" />
                     <span className="font-medium">Популярные вопросы</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      'Подготовка к ',
-                      'Первичный прием',
-                      'Повторный прием',
-                      'Парковка ',
-                      'Состав анализа ',
-                    ].map((preset) => (
-                      <button
-                        key={preset}
-                        onClick={() => {
-                          setSuggestion('');
-                          window.setTimeout(() => setSuggestion(preset), 0);
-                        }}
-                        className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left"
-                      >
-                        + {preset}
-                      </button>
-                    ))}
-                  </div>
+
+                  {[
+                    {
+                      group: 'Подготовка',
+                      presets: [
+                        { label: 'Подготовка к анализу...', value: 'Подготовка к анализу ' },
+                        { label: 'Подготовка к исследованию...', value: 'Подготовка к исследованию ' },
+                        { label: 'Подготовка к процедуре...', value: 'Подготовка к процедуре ' },
+                        { label: 'Противопоказания для...', value: 'Противопоказания для ' },
+                        { label: 'Показания для...', value: 'Показания для ' },
+                      ],
+                    },
+                    {
+                      group: 'Приём',
+                      presets: [
+                        { label: 'Первичный прием...', value: 'Первичный прием ' },
+                        { label: 'Повторный прием...', value: 'Повторный прием ' },
+                        { label: 'К кому записать...', value: 'К кому записать ' },
+                        { label: 'Информация о враче...', value: 'Информация о враче: ' },
+                      ],
+                    },
+                    {
+                      group: 'Услуги и результаты',
+                      presets: [
+                        { label: 'Состав анализа...', value: 'Состав анализа ' },
+                        { label: 'Стоимость процедуры...', value: 'Стоимость процедуры ' },
+                        { label: 'Получение результатов...', value: 'Получение результатов ' },
+                      ],
+                    },
+                  ].map(({ group, presets }) => (
+                    <div key={group} className="space-y-1.5">
+                      <div className="text-[11px] font-semibold text-[#94A3B8] uppercase tracking-wide">
+                        {group}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {presets.map(({ label, value }) => (
+                          <button
+                            key={label}
+                            onClick={() => {
+                              setSuggestion('');
+                              window.setTimeout(() => setSuggestion(value), 0);
+                            }}
+                            className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left"
+                          >
+                            + {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
