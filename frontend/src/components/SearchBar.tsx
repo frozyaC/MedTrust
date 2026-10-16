@@ -56,7 +56,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   return (
     <div className="bg-white rounded-xl border border-[#BFDBFE] p-4 shadow-xs space-y-3">
       {/* Patient context banner */}
-      <div className="flex items-center justify-between gap-3 text-xs bg-[#EFF6FF] px-3.5 py-2.5 rounded-lg border border-[#DBEAFE]">
+      <div
+        className={`flex items-center justify-between gap-3 text-xs px-3.5 py-2.5 rounded-lg border ${
+          selectedPatient
+            ? 'bg-[#EFF6FF] border-[#DBEAFE]'
+            : 'bg-[#FFFBEB] border-[#FDE68A]'
+        }`}
+      >
         {selectedPatient ? (
           <div className="flex items-center gap-2 text-[#0F172A] min-w-0 flex-1">
             <UserCheck className="w-4 h-4 text-[#2563EB] shrink-0" />
@@ -65,9 +71,11 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             </span>
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-[#475569] min-w-0 flex-1">
-            <AlertCircle className="w-4 h-4 text-[#F59E0B] shrink-0" />
-            <span>Пациент не выбран — ответ без персонализации</span>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <AlertCircle className="w-4 h-4 text-[#B45309] shrink-0" />
+            <span className="font-semibold text-[#B45309]">
+              Пациент не выбран — ответ без персонализации
+            </span>
           </div>
         )}
 

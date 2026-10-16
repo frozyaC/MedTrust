@@ -440,32 +440,66 @@ export default function App() {
     });
   };
 
-  const emptyContent = useMemo(
+  const popularQuestionsContent = useMemo(
     () => (
-      <div className="bg-white rounded-xl border border-[#BFDBFE] p-12 text-center shadow-xs flex flex-col items-center justify-center my-6 space-y-4">
-        <div className="w-16 h-16 rounded-full bg-[#DBEAFE] flex items-center justify-center text-[#2563EB] shadow-xs">
-          <Search className="w-8 h-8" />
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 text-xs text-[#475569] mb-2">
+          <Sparkles className="w-3.5 h-3.5 text-[#3B82F6]" />
+          <span className="font-medium">Популярные вопросы</span>
         </div>
-        <div className="space-y-1">
-          <h3 className="font-semibold text-lg text-[#0F172A]">
-            Выберите пациента и задайте вопрос
-          </h3>
-          <p className="text-xs text-[#475569] max-w-md">
-            Выберите пациента в списке слева или задайте общий вопрос без персонализации.
-          </p>
-        </div>
-        <button
-          onClick={() => {
-            setSelectedPatient(patients[0]);
-            setScreenState('ready');
-          }}
-          className="px-4 py-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-semibold rounded-lg transition-colors shadow-xs"
-        >
-          Выбрать пациента
-        </button>
+
+        {[
+          {
+            group: 'Подготовка',
+            presets: [
+              { label: 'Подготовка к анализу...', value: 'Подготовка к анализу ' },
+              { label: 'Подготовка к исследованию...', value: 'Подготовка к исследованию ' },
+              { label: 'Подготовка к процедуре...', value: 'Подготовка к процедуре ' },
+              { label: 'Противопоказания для...', value: 'Противопоказания для ' },
+              { label: 'Показания для...', value: 'Показания для ' },
+            ],
+          },
+          {
+            group: 'Приём',
+            presets: [
+              { label: 'Первичный прием...', value: 'Первичный прием ' },
+              { label: 'Повторный прием...', value: 'Повторный прием ' },
+              { label: 'К кому записать...', value: 'К кому записать ' },
+              { label: 'Информация о враче...', value: 'Информация о враче: ' },
+            ],
+          },
+          {
+            group: 'Услуги и результаты',
+            presets: [
+              { label: 'Состав анализа...', value: 'Состав анализа ' },
+              { label: 'Стоимость процедуры...', value: 'Стоимость процедуры ' },
+              { label: 'Получение результатов...', value: 'Получение результатов ' },
+            ],
+          },
+        ].map(({ group, presets }) => (
+          <div key={group} className="space-y-1.5">
+            <div className="text-[11px] font-semibold text-[#94A3B8] uppercase tracking-wide">
+              {group}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {presets.map(({ label, value }) => (
+                <button
+                  key={label}
+                  onClick={() => {
+                    setSuggestion('');
+                    window.setTimeout(() => setSuggestion(value), 0);
+                  }}
+                  className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left"
+                >
+                  + {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     ),
-    [patients],
+    [],
   );
 
   return (
@@ -494,80 +528,25 @@ export default function App() {
               onSuggestionConsumed={() => setSuggestion('')}
             />
 
-            {screenState === 'empty' && emptyContent}
-
-            {screenState === 'ready' && (
+            {(screenState === 'empty' || screenState === 'ready') && (
               <div className="bg-white rounded-xl border border-[#BFDBFE] p-8 shadow-xs space-y-4">
-                <div className="flex items-start gap-4">
-                  <div className="w-12 h-12 rounded-xl bg-[#DBEAFE] flex items-center justify-center text-[#2563EB] shrink-0">
-                    <UserCheck className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-base text-[#0F172A] mb-1">
-                      Пациент выбран
-                    </h3>
-                    <p className="text-xs text-[#475569] leading-relaxed">
-                      Задайте вопрос в строке выше. Ответ будет персонализирован с учётом данных
-                      пациента из CRM.
-                    </p>
-                  </div>
-                </div>
-                <div className="pt-3 border-t border-[#EFF6FF] space-y-4">
-                  <div className="flex items-center gap-2 text-xs text-[#475569] mb-2">
-                    <Sparkles className="w-3.5 h-3.5 text-[#3B82F6]" />
-                    <span className="font-medium">Популярные вопросы</span>
-                  </div>
-
-                  {[
-                    {
-                      group: 'Подготовка',
-                      presets: [
-                        { label: 'Подготовка к анализу...', value: 'Подготовка к анализу ' },
-                        { label: 'Подготовка к исследованию...', value: 'Подготовка к исследованию ' },
-                        { label: 'Подготовка к процедуре...', value: 'Подготовка к процедуре ' },
-                        { label: 'Противопоказания для...', value: 'Противопоказания для ' },
-                        { label: 'Показания для...', value: 'Показания для ' },
-                      ],
-                    },
-                    {
-                      group: 'Приём',
-                      presets: [
-                        { label: 'Первичный прием...', value: 'Первичный прием ' },
-                        { label: 'Повторный прием...', value: 'Повторный прием ' },
-                        { label: 'К кому записать...', value: 'К кому записать ' },
-                        { label: 'Информация о враче...', value: 'Информация о враче: ' },
-                      ],
-                    },
-                    {
-                      group: 'Услуги и результаты',
-                      presets: [
-                        { label: 'Состав анализа...', value: 'Состав анализа ' },
-                        { label: 'Стоимость процедуры...', value: 'Стоимость процедуры ' },
-                        { label: 'Получение результатов...', value: 'Получение результатов ' },
-                      ],
-                    },
-                  ].map(({ group, presets }) => (
-                    <div key={group} className="space-y-1.5">
-                      <div className="text-[11px] font-semibold text-[#94A3B8] uppercase tracking-wide">
-                        {group}
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {presets.map(({ label, value }) => (
-                          <button
-                            key={label}
-                            onClick={() => {
-                              setSuggestion('');
-                              window.setTimeout(() => setSuggestion(value), 0);
-                            }}
-                            className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left"
-                          >
-                            + {label}
-                          </button>
-                        ))}
-                      </div>
+                {screenState === 'ready' && selectedPatient && (
+                  <div className="flex items-start gap-4 pb-3 border-b border-[#EFF6FF]">
+                    <div className="w-12 h-12 rounded-xl bg-[#DBEAFE] flex items-center justify-center text-[#2563EB] shrink-0">
+                      <UserCheck className="w-6 h-6" />
                     </div>
-                  ))}
-                </div>
+                    <div>
+                      <h3 className="font-semibold text-base text-[#0F172A] mb-1">
+                        Пациент выбран
+                      </h3>
+                      <p className="text-xs text-[#475569] leading-relaxed">
+                        Задайте вопрос в строке выше. Ответ будет персонализирован с учётом данных
+                        пациента из CRM.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {popularQuestionsContent}
               </div>
             )}
           </main>
@@ -576,9 +555,7 @@ export default function App() {
             <ConversationHeader
               patient={selectedPatient}
               messageCount={messageCount}
-              onChangePatient={() =>
-                handleSelectPatient(selectedPatient ? null : patients[0])
-              }
+              onChangePatient={handleChangePatient}
               onNewConversation={clearConversation}
             />
 
