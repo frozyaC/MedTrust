@@ -363,6 +363,20 @@ _CLINICAL_INTENT_RE = re.compile(
     r"противопоказан\w*|побочн\w*|доз\w*|дозиров\w*|contraindication\w*|side\s+effects?|dosage|dose\b",
     re.IGNORECASE,
 )
+_CLINICAL_TOPIC_PATTERNS: dict[str, str] = {
+    "migraine": r"мигрен\w*|migrain\w*",
+    "gastroscopy": r"гастроскоп\w*|фгдс|эзофагогастродуоденоскоп\w*|gastroscop\w*|upper\s+endoscop\w*|esophagogastroduodenoscop\w*",
+    "myocardial_infarction": r"инфаркт\w*\s+ми[оа]кард\w*|myocardial\s+infarction|heart\s+attack",
+    "stroke": r"инсульт\w*|stroke\w*",
+    "diabetes": r"сахарн\w*\s+диабет\w*|diabet\w*",
+    "heart_failure": r"сердечн\w*\s+недостаточност\w*|heart\s+failure",
+    "atrial_fibrillation": r"фибрилляц\w*\s+предсерд\w*|atrial\s+fibrillation",
+    "ct_scan": r"(?<![а-яё])кт(?![а-яё])|компьютерн\w*\s+томограф\w*|computed\s+tomograph\w*|\bct\s+scan\b",
+    "mri_scan": r"(?<![а-яё])мрт(?![а-яё])|магнитно-резонансн\w*\s+томограф\w*|magnetic\s+resonance",
+    "colonoscopy": r"колоноскоп\w*|colonoscop\w*",
+    "ultrasound": r"узи|ультразвуков\w*\s+исследован\w*|ultrasound",
+}
+
 _FRESHNESS_RE = re.compile(
     r"современн\w*|актуальн\w*|последн\w*|новейш\w*|на\s+сегодняшний\s+день|"
     r"current|latest|recent|up[- ]to[- ]date|newest|modern",
@@ -401,13 +415,39 @@ def requires_fresh_clinical_search(query: str) -> bool:
 
 
 def has_topic_specific_clinical_evidence(query: str, source_text: str) -> bool:
-    """Require a source to mention the requested condition and the requested clinical intent."""
+    """Require a source to mention the requested clinical topic and intent.
+
+    The topic check is bilingual: a Russian question about migraine may be answered
+    by an English-language NICE/medical source. Patient-risk context is stricter: if
+    the query names a previous infarction/stroke or another major condition, that
+    condition and the procedure must both be present in the source text.
+    """
     if not requires_topic_specific_clinical_evidence(query):
         return True
-    topic_tokens = _specific_topic_tokens(query)
-    source_tokens = set(_tokens(source_text))
-    if not topic_tokens.intersection(source_tokens):
-        return False
+    query_value = (query or "").casefold().replace("ё", "е")
+    source_value = (source_text or "").casefold().replace("ё", "е")
+    query_topics = {
+        topic for topic, pattern in _CLINICAL_TOPIC_PATTERNS.items()
+        if re.search(pattern, query_value, re.IGNORECASE)
+    }
+    source_topics = {
+        topic for topic, pattern in _CLINICAL_TOPIC_PATTERNS.items()
+        if re.search(pattern, source_value, re.IGNORECASE)
+    }
+    if query_topics:
+        context_topics = query_topics.intersection({
+            "myocardial_infarction", "stroke", "diabetes", "heart_failure", "atrial_fibrillation"
+        })
+        if context_topics:
+            if not query_topics.issubset(source_topics):
+                return False
+        elif not query_topics.intersection(source_topics):
+            return False
+    else:
+        topic_tokens = _specific_topic_tokens(query)
+        source_tokens = set(_tokens(source_text))
+        if not topic_tokens.intersection(source_tokens):
+            return False
     # At least one intent that the question asks about must be evidenced by the source.
     for query_pattern, source_pattern in _CLINICAL_INTENT_GROUPS:
         if re.search(query_pattern, query, re.IGNORECASE) and re.search(source_pattern, source_text or "", re.IGNORECASE):

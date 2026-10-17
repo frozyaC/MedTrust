@@ -24,6 +24,11 @@ class WebSearchResult:
     snippet: str
     rank: int
     domain: str
+    # "verified" means the search adapter's topic/evidence checks passed.
+    # RAG may retain a weak but plausibly related result as "unverified" rather
+    # than discarding its link, but it must never count it as confirmed evidence.
+    verification_status: str = "verified"
+    verification_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,7 @@ class WebSearchResponse:
     status: str
     results: list[WebSearchResult]
     error: str | None = None
+    attempted_queries: list[str] | None = None
 
 
 # A source must match a meaningful topic from the query. These bilingual families
@@ -100,7 +106,7 @@ _TOPIC_PATTERNS: dict[str, tuple[str, ...]] = {
     "myocardial_infarction": (
         r"myocardial\s+infarction",
         r"heart\s+attack",
-        r"инфаркт\w*\s+миокард\w*",
+        r"инфаркт\w*\s+ми[оа]кард\w*",
     ),
     "parkinsons_disease": (
         r"parkinson\w*(?:\s+disease)?",
@@ -301,6 +307,13 @@ def _fallback_search_terms(query: str, domain: str | None = None) -> str:
         terms.append("CT scan preparation eating drinking smoking contrast patient instructions")
     if "gastroscopy" in topics:
         terms.append("gastroscopy preparation fasting eating drinking smoking patient instructions")
+    if "gastroscopy" in topics and "myocardial_infarction" in topics:
+        terms.append(
+            "upper gastrointestinal endoscopy after myocardial infarction timing safety sedation "
+            "cardiovascular risk antiplatelet anticoagulant clinical guideline"
+        )
+    if re.search(r"после.{0,35}инфаркт\w*.{0,20}ми[оа]кард\w*|инфаркт\w*.{0,20}ми[оа]кард\w*", normalized_query):
+        terms.append("after myocardial infarction endoscopy procedural risk timing sedation")
     if "biochemistry" in topics:
         terms.append("before blood test fasting food smoking patient preparation")
     if "preoperative_tests" in topics:
@@ -322,8 +335,13 @@ def _fallback_search_terms(query: str, domain: str | None = None) -> str:
         terms.append("adults")
     if not intents:
         terms.append("clinical guidance")
-    # Ordered deduplication keeps search requests short and deterministic.
-    return " ".join(dict.fromkeys(" ".join(terms).split()))
+    # Ordered deduplication keeps search requests short and deterministic. Add a
+    # quoted phrase after deduplication for condition-specific searches: word-level
+    # deduplication otherwise separates "after myocardial infarction" and harms recall.
+    result = " ".join(dict.fromkeys(" ".join(terms).split()))
+    if re.search(r"после.{0,35}инфаркт\w*.{0,20}ми[оа]кард\w*|инфаркт\w*.{0,20}ми[оа]кард\w*", normalized_query):
+        result += ' "after myocardial infarction"'
+    return result
 
 
 def _stem_token(token: str) -> str:
@@ -406,6 +424,20 @@ def is_relevant_web_result(query: str, result: WebSearchResult) -> bool:
     if query_topics:
         topic_matches = query_topics.intersection(source_topics)
         if not topic_matches:
+            return False
+        # Do not answer a high-risk patient-specific query from a generic procedure page.
+        # When the query explicitly names a recent/previous condition, the result must
+        # mention that condition as well as the procedure; routine prep is not evidence
+        # about timing, sedation, or safety after a myocardial infarction/stroke.
+        required_context_topics = query_topics.intersection({
+            "myocardial_infarction", "stroke", "diabetes", "heart_failure",
+            "atrial_fibrillation", "pregnancy",
+        })
+        procedure_topics = query_topics.intersection({
+            "gastroscopy", "ct_scan", "mri_scan", "colonoscopy", "ultrasound",
+        })
+        required_specific_topics = required_context_topics | (procedure_topics if required_context_topics else set())
+        if required_context_topics and not required_specific_topics.issubset(source_topics):
             return False
         # A comparison request is answered by combining evidence about its components;
         # individual authoritative pages do not need to contain the word "difference".
@@ -644,6 +676,8 @@ def _preferred_evidence_url(query: str, result: WebSearchResult) -> WebSearchRes
             snippet=result.snippet,
             rank=result.rank,
             domain=result.domain,
+            verification_status=result.verification_status,
+            verification_note=result.verification_note,
         )
     return result
 
@@ -660,6 +694,61 @@ _DINING_QUERY_RE = re.compile(
 def is_dining_query(query: str) -> bool:
     """Identify local food-place discovery so it can use an appropriate safe allowlist."""
     return bool(_DINING_QUERY_RE.search(query or ""))
+
+
+def _broad_search_queries(query: str) -> list[str]:
+    """Return short English query variants when the original search is low-recall.
+
+    These are *additional* public-search queries, not replacements for the user's
+    wording. Keep condition-specific context in the query when it affects safety.
+    """
+    topics = _topic_ids(query)
+    intents = _intent_ids(query)
+    values: list[str] = []
+
+    translated = _fallback_search_terms(query)
+    if translated and not re.search(r"[а-яё]", translated, re.IGNORECASE):
+        values.append(translated)
+
+    topic_terms = [_TOPIC_ENGLISH_TERMS[item] for item in sorted(topics) if item in _TOPIC_ENGLISH_TERMS]
+    intent_terms = [_INTENT_ENGLISH_TERMS[item] for item in sorted(intents) if item in _INTENT_ENGLISH_TERMS]
+    normalized = " ".join([*topic_terms, *intent_terms]).strip()
+    if normalized:
+        values.append(normalized)
+
+    normalized_query = (query or "").casefold().replace("ё", "е")
+    if "migraine" in topics and ("diagnosis" in intents or "recommendations" in intents):
+        values.extend((
+            "migraine diagnosis adults clinical practice guideline",
+            "migraine diagnostic criteria adults NICE guideline",
+        ))
+    if "blood_test" in topics and "preparation" in intents:
+        values.extend((
+            "complete blood count preparation patient instructions fasting",
+            "CBC blood test preparation official patient guidance",
+        ))
+    if "gastroscopy" in topics and "preparation" in intents:
+        if "myocardial_infarction" in topics:
+            values.extend((
+                "gastroscopy preparation after myocardial infarction procedural safety",
+                "upper endoscopy after myocardial infarction sedation clinical guidance",
+            ))
+        else:
+            values.extend((
+                "gastroscopy preparation before procedure patient instructions",
+                "upper endoscopy preparation NHS patient guidance",
+            ))
+
+    original = " ".join((query or "").split())
+    output: list[str] = []
+    seen: set[str] = {original.casefold()}
+    for value in values:
+        clean = " ".join(value.split())
+        key = clean.casefold()
+        if clean and key not in seen:
+            seen.add(key)
+            output.append(clean[:240])
+    return output[:5]
 
 
 class SearXNGWebSearchClient:
@@ -694,8 +783,8 @@ class SearXNGWebSearchClient:
                     "q": query[:600],
                     "format": "json",
                     "language": (
-                        "en" if query.lstrip().lower().startswith("site:")
-                        and not any(domain in query.lower() for domain in ("minzdrav.gov.ru", "cr.minzdrav.gov.ru"))
+                        "ru" if any(domain in query.lower() for domain in ("minzdrav.gov.ru", "cr.minzdrav.gov.ru"))
+                        else "en" if query.lstrip().lower().startswith("site:") or not re.search(r"[а-яё]", query, re.IGNORECASE)
                         else self.settings.web_search_language
                     ),
                     "safesearch": 1,
@@ -810,6 +899,8 @@ class SearXNGWebSearchClient:
                             snippet=combined_text,
                             rank=result.rank,
                             domain=result.domain,
+                            verification_status=result.verification_status,
+                            verification_note=result.verification_note,
                         )
             except (requests.RequestException, UnicodeError):
                 # If the page cannot be fetched, use the SearXNG snippet, but it
@@ -818,6 +909,35 @@ class SearXNGWebSearchClient:
             enriched.append(result)
         return enriched
 
+    @staticmethod
+    def _plausibly_related_for_unverified(query: str, result: WebSearchResult) -> bool:
+        """Allow a safe same-topic page as provisional evidence when strict checks fail.
+
+        Do not loosen the condition-and-procedure pair for high-risk queries such as
+        endoscopy after myocardial infarction. A broad topic match is only enough to
+        preserve a link with an explicit unverified label, never to pass source checks.
+        """
+        source_text = f"{result.title} {unquote(result.url)} {result.snippet}"
+        query_topics = _topic_ids(query)
+        source_topics = _topic_ids(source_text)
+        if query_topics:
+            if not query_topics.intersection(source_topics):
+                return False
+            risk_context_topics = query_topics.intersection({
+                "myocardial_infarction", "stroke", "diabetes", "heart_failure",
+                "atrial_fibrillation", "pregnancy",
+            })
+            procedure_topics = query_topics.intersection({
+                "gastroscopy", "ct_scan", "mri_scan", "colonoscopy", "ultrasound",
+            })
+            if risk_context_topics and procedure_topics:
+                return (risk_context_topics | procedure_topics).issubset(source_topics)
+            return True
+
+        query_terms = _meaningful_terms(query)
+        source_terms = _meaningful_terms(source_text)
+        return bool(query_terms.intersection(source_terms))
+
     def _relevant_and_enriched(
         self,
         query: str,
@@ -825,50 +945,88 @@ class SearXNGWebSearchClient:
         max_fetch: int = 10,
     ) -> list[WebSearchResult]:
         # First remove only explicit contradictions. Do not reject an otherwise
-        # safe page merely because its short title/snippet omits the query topic
-        # or intent; fetch a bounded shortlist and verify its full text instead.
+        # safe page merely because its short title/snippet omits the query intent.
         viable = [item for item in candidates if _metadata_may_be_relevant(query, item)]
         viable = [_preferred_evidence_url(query, item) for item in viable]
         viable.sort(
             key=lambda item: (not is_relevant_web_result(query, item), item.rank)
         )
         enriched = self._enrich_results(viable[:max(1, max_fetch)], query=query)
-        relevant = [
-            item for item in enriched
-            if is_relevant_web_result(query, item)
-            and has_answerable_web_evidence(query, item)
-        ]
-        # Both checks are retrieval-time filters: topic/intent relevance and the
-        # presence of usable source text. The generated answer is not run through
-        # a rigid medical-topic validator after generation.
-        return sorted(relevant, key=lambda item: item.rank)
+        confirmed: list[WebSearchResult] = []
+        provisional: list[WebSearchResult] = []
+        for item in enriched:
+            strong_match = (
+                is_relevant_web_result(query, item)
+                and has_answerable_web_evidence(query, item)
+            )
+            if strong_match:
+                confirmed.append(item)
+                continue
+            if self._plausibly_related_for_unverified(query, item):
+                provisional.append(WebSearchResult(
+                    title=item.title,
+                    url=item.url,
+                    snippet=item.snippet,
+                    rank=item.rank,
+                    domain=item.domain,
+                    verification_status="unverified",
+                    verification_note=(
+                        "Тема страницы совпадает с запросом, но проверка не подтвердила все условия/утверждения. "
+                        "Использовать только как предварительный материал и проверить вручную."
+                    ),
+                ))
+        # Confirmed evidence always precedes provisional pages. Provisional results
+        # remain visible so later answer logic can give a cautious answer and expose
+        # the actual URL rather than converting a relevant but imperfect page to no result.
+        return sorted(confirmed, key=lambda item: item.rank) + sorted(
+            provisional, key=lambda item: item.rank
+        )
 
     def search(self, query: str, limit: int = 3) -> WebSearchResponse:
         if not self.settings.web_search_enabled:
             return WebSearchResponse("disabled", [])
 
         requested_limit = max(1, min(limit, 3))
-        # Collect more than the final output size. Early truncation caused valid
-        # sources just below irrelevant top-ranked results to be lost.
         candidate_limit = min(30, max(15, requested_limit * 10))
-        generic_raw = self._request(query, self.settings.web_search_timeout_seconds)
-        if generic_raw is None:
-            return WebSearchResponse("api_error", [])
+        any_request_completed = False
+        provider_returned_results = False
+        safe_results_seen = False
+        pool: list[WebSearchResult] = []
+        seen_urls: set[str] = set()
+        attempted_queries: list[str] = []
 
-        provider_returned_results = bool(generic_raw)
-        generic_candidates = self._parse_safe_results(
-            generic_raw, limit=candidate_limit
-        )
-        safe_results_seen = bool(generic_candidates)
-        seen_urls = {item.url for item in generic_candidates}
-        results = self._relevant_and_enriched(
-            query, generic_candidates, max_fetch=max(12, requested_limit * 4)
-        )[:requested_limit]
-        if len(results) >= requested_limit:
-            return WebSearchResponse("success", results)
+        def gather(search_query: str, timeout: int, use_original_query_for_relevance: bool = True) -> None:
+            nonlocal any_request_completed, provider_returned_results, safe_results_seen
+            attempted_queries.append(search_query)
+            raw = self._request(search_query, timeout)
+            if raw is None:
+                return
+            any_request_completed = True
+            provider_returned_results = provider_returned_results or bool(raw)
+            parsed = self._parse_safe_results(raw, limit=candidate_limit)
+            safe_results_seen = safe_results_seen or bool(parsed)
+            unique = [item for item in parsed if item.url not in seen_urls]
+            seen_urls.update(item.url for item in parsed)
+            if not unique:
+                return
+            relevance_query = query if use_original_query_for_relevance else search_query
+            pool.extend(self._relevant_and_enriched(
+                relevance_query, unique, max_fetch=max(12, requested_limit * 4)
+            ))
 
-        # English query terms materially improve recall on English-language
-        # authoritative sites (e.g. NICE and PubMed) for Russian questions.
+        # Primary attempt uses the user's original language and wording.
+        gather(query, self.settings.web_search_timeout_seconds)
+        if sum(item.verification_status == "verified" for item in pool) < requested_limit:
+            # If a long Russian query produces no results (or only weak results), retry
+            # with concise English equivalents *without* a site: restriction. This is
+            # important because site-restricted fallback alone can suppress valid hits.
+            for variant in _broad_search_queries(query):
+                gather(variant, self.settings.web_search_fallback_timeout_seconds)
+                if sum(item.verification_status == "verified" for item in pool) >= requested_limit:
+                    break
+
+        # Use domain-specific searches as a final recall path, while retaining weak
+        # same-topic pages found earlier as provisional sources.
         normalized_query = query.casefold().replace("ё", "е")
         preparation_or_lab_query = bool(
             _topic_ids(query) & {"ct_scan", "gastroscopy", "biochemistry", "blood_test", "preoperative_tests", "urology_tests"}
@@ -885,8 +1043,6 @@ class SearXNGWebSearchClient:
                     "cancer.gov", "mayoclinic.org", "msdmanuals.com", "nice.org.uk",
                 )
             else:
-                # Lab-test questions are better served by patient test guides than by
-                # imaging sites or research-paper indexes.
                 medical_preparation_domains = (
                     "medlineplus.gov", "labtestsonline.org.uk", "testing.com", "nhs.uk",
                     "cr.minzdrav.gov.ru", "mayoclinic.org", "msdmanuals.com",
@@ -895,58 +1051,65 @@ class SearXNGWebSearchClient:
             fallback_domains = tuple(dict.fromkeys((*medical_preparation_domains, *self.authority_domains)))
         else:
             fallback_domains = self.authority_domains
-        max_domains = max(1, self.settings.web_fallback_max_domains)
-        fallback_batches: list[list[WebSearchResult]] = []
+
+        verified_domains = {
+            item.domain for item in pool if item.verification_status == "verified"
+        }
+        configured_max_domains = max(1, self.settings.web_fallback_max_domains)
+        max_domains = min(10, max(configured_max_domains, 10 if preparation_or_lab_query else configured_max_domains))
         for domain in fallback_domains[:max_domains]:
+            if len(verified_domains) >= requested_limit:
+                break
             fallback_terms = _fallback_search_terms(query, domain)
             fallback_query = f"site:{domain} {fallback_terms}"
-            fallback_raw = self._request(
-                fallback_query, self.settings.web_search_fallback_timeout_seconds
-            )
-            if fallback_raw is None:
-                continue
-            provider_returned_results = provider_returned_results or bool(fallback_raw)
-            parsed = self._parse_safe_results(
-                fallback_raw, start_rank=1, limit=candidate_limit
-            )
-            if parsed:
-                safe_results_seen = True
-            unique_candidates = [item for item in parsed if item.url not in seen_urls]
-            seen_urls.update(item.url for item in parsed)
-            relevant = self._relevant_and_enriched(
-                query, unique_candidates, max_fetch=max(3, requested_limit)
-            )
-            if relevant:
-                fallback_batches.append(relevant)
+            gather(fallback_query, self.settings.web_search_fallback_timeout_seconds)
+            # `gather` applies the original query's relevance checks. Do not stop on a
+            # merely provisional result; keep searching for a better confirmed source.
+            verified_domains = {
+                item.domain for item in pool if item.verification_status == "verified"
+            }
 
-        # Keep the final source set both topically relevant and diverse by domain.
-        selected_urls = {item.url for item in results}
-        for batch in fallback_batches:
-            if len(results) >= requested_limit:
+        # Deduplicate by URL, preferring a verified instance if the same page was found
+        # through multiple query variants. Then favour confirmed material and domain
+        # diversity before filling the remaining slots with provisional sources.
+        by_url: dict[str, WebSearchResult] = {}
+        for item in pool:
+            key = item.url.rstrip("/").casefold()
+            existing = by_url.get(key)
+            if existing is None or (
+                existing.verification_status != "verified" and item.verification_status == "verified"
+            ):
+                by_url[key] = item
+        ordered = sorted(
+            by_url.values(),
+            key=lambda item: (item.verification_status != "verified", item.rank, item.domain),
+        )
+        selected: list[WebSearchResult] = []
+        used_domains: set[str] = set()
+        for item in ordered:
+            if item.domain not in used_domains:
+                selected.append(item)
+                used_domains.add(item.domain)
+            if len(selected) >= requested_limit:
                 break
-            candidate = next(
-                (item for item in batch if item.url not in selected_urls), None
-            )
-            if candidate is not None:
-                results.append(candidate)
-                selected_urls.add(candidate.url)
+        if len(selected) < requested_limit:
+            selected_urls = {item.url for item in selected}
+            for item in ordered:
+                if item.url not in selected_urls:
+                    selected.append(item)
+                    selected_urls.add(item.url)
+                if len(selected) >= requested_limit:
+                    break
 
-        if len(results) < requested_limit:
-            for batch in fallback_batches:
-                for candidate in batch:
-                    if len(results) >= requested_limit:
-                        break
-                    if candidate.url not in selected_urls:
-                        results.append(candidate)
-                        selected_urls.add(candidate.url)
-
-        if results:
-            return WebSearchResponse("success", results[:requested_limit])
+        if selected:
+            return WebSearchResponse("success", selected, attempted_queries=attempted_queries)
         if safe_results_seen:
-            return WebSearchResponse("no_relevant_results", [])
+            return WebSearchResponse("no_relevant_results", [], attempted_queries=attempted_queries)
         if provider_returned_results:
-            return WebSearchResponse("no_safe_results", [])
-        return WebSearchResponse("no_provider_results", [])
+            return WebSearchResponse("no_safe_results", [], attempted_queries=attempted_queries)
+        if not any_request_completed:
+            return WebSearchResponse("api_error", [], attempted_queries=attempted_queries)
+        return WebSearchResponse("no_provider_results", [], attempted_queries=attempted_queries)
 
 
 # Keep a stable service name for future provider swaps.
