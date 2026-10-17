@@ -297,7 +297,7 @@ def test_extract_fallback_returns_strong_wiki_evidence_with_valid_citation(monke
     assert sources[0]["citation"] == "[W1]"
 
 
-def test_rag_ignores_irrelevant_web_source_but_still_returns_model_answer(monkeypatch):
+def test_rag_ignores_irrelevant_web_source_and_uses_unverified_fallback_for_current_guidance(monkeypatch):
     from app.services.web_search import WebSearchResponse
 
     class Settings:
@@ -355,12 +355,14 @@ def test_rag_ignores_irrelevant_web_source_but_still_returns_model_answer(monkey
         "Какие современные рекомендации по диагностике мигрени у взрослых?", None, 5
     )
 
-    assert "общий справочный ответ" in result["answer"]
-    assert result["sources"] == []
+    assert "Могу дать общий справочный ответ" in result["answer"]
+    assert "Надёжность ответа" in result["answer"]
+    assert result["source_checks_passed"] is False
+    assert all(source["source_type"] == "search_link" for source in result["sources"])
     assert result["web_search_used"] is False
     assert result["web_search_status"] == "no_relevant_results"
     assert result["resource_usage"]["gigachat_calls"] == 1
-    assert "из общих знаний" in service.gigachat.prompt
+    assert "РЕЖИМ НЕПОДТВЕРЖДЁННОГО ОТВЕТА" in service.gigachat.prompt
 
 
 def test_rag_does_not_block_answer_when_web_body_has_no_answer_evidence(monkeypatch):
@@ -396,7 +398,7 @@ def test_rag_does_not_block_answer_when_web_body_has_no_answer_evidence(monkeypa
             return "Подготовка к исследованию зависит от назначений клиники; уточните инструкцию у эндоскопического кабинета."
 
     generic_body = WebSearchResult(
-        title="Migraine diagnosis and recommendations - NICE",
+        title="Migraine overview - NICE",
         url="https://www.nice.org.uk/guidance/migraine",
         snippet=(
             "NICE guideline overview. Information about our service, how to navigate this page, "
@@ -404,6 +406,8 @@ def test_rag_does_not_block_answer_when_web_body_has_no_answer_evidence(monkeypa
         ),
         rank=1,
         domain="www.nice.org.uk",
+        verification_status="unverified",
+        verification_note="The page is on-topic but the excerpt does not support the requested diagnostic details.",
     )
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
@@ -416,8 +420,15 @@ def test_rag_does_not_block_answer_when_web_body_has_no_answer_evidence(monkeypa
     result = service.answer("Какие рекомендации по диагностике мигрени у взрослых?", None, 5)
 
     assert "Подготовка к исследованию" in result["answer"]
-    assert result["sources"] == []
-    assert result["web_search_status"] == "no_relevant_results"
+    assert "Надёжность ответа" in result["answer"]
+    assert any(
+        source.get("source_type") == "web"
+        and source.get("verification_status") == "unverified"
+        for source in result["sources"]
+    )
+    assert any(source.get("source_type") == "search_link" for source in result["sources"])
+    assert result["source_checks_passed"] is False
+    assert result["web_search_status"] == "success"
     assert result["resource_usage"]["gigachat_calls"] == 1
     assert service.gigachat.calls == 1
 
@@ -676,3 +687,17 @@ def test_claim_attribution_binds_grand_mall_parking_to_wiki_evidence():
     assert "[W1]" in attributed
     assert audit and audit[0]["supported"] is True
     assert updated_sources[0]["used_in_answer"] is True
+
+
+def test_unsupported_claims_are_omitted_without_repeated_placeholder_bullets():
+    answer = (
+        "### Подготовка к КТ\n\n"
+        "- Нельзя есть за 12 часов до процедуры.\n"
+        "- Нужно отменить все лекарства."
+    )
+    cleaned, _, audit = RagService._attribute_answer_to_sources(answer, [])
+    assert "Не удалось подтвердить этот пункт" not in cleaned
+    assert "Нельзя есть за 12 часов" not in cleaned
+    assert "отменить все лекарства" not in cleaned
+    assert len(audit) == 2
+    assert all(item["suppressed"] and not item["supported"] for item in audit)
