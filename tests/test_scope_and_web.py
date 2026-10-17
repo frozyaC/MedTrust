@@ -109,9 +109,17 @@ def test_gastroscopy_query_reaches_wiki_retrieval_and_answer_generation(monkeypa
     result = service.answer("Как подготовиться к гастроскопии", None, 5)
 
     assert search_calls == [("Как подготовиться к гастроскопии", None, 15)]
-    assert result["answer"].startswith("Подготовка к гастроскопии")
+    assert "Подготовка к гастроскопии" in result["answer"]
+    assert "Не удалось подтвердить этот пункт" not in result["answer"]
     assert result["retrieval"][0]["title"] == "Подготовка к гастроскопии"
-    assert result["sources"][0]["title"] == "Подготовка к гастроскопии"
-    assert result["sources"][0]["used_in_answer"] is False
-    assert "Общие сведения о подготовке к гастроскопии" in service.gigachat.prompts[0]
+    # The Wiki candidate is visible in retrieval diagnostics but is not promoted to
+    # a confirmed answer source because it contains no actual preparation instructions.
+    assert result["sources"]
+    assert all(source["source_type"] == "search_link" for source in result["sources"])
+    assert result["source_checks_passed"] is False
+    # The title matches the topic, but the passage only contains generic guidance.
+    # It must not be promoted to an evidence source or put in the generation context.
+    assert result["answer_reviewed"] is True
+    assert result["source_checks_passed"] is False  # Preparation details are not in the source.
+    assert "Общие сведения о подготовке к гастроскопии" not in service.gigachat.prompts[0]
     assert result["resource_usage"]["gigachat_calls"] == 1

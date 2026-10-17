@@ -149,11 +149,10 @@ def test_searxng_uses_authority_domain_fallback(monkeypatch):
     assert len(result.results) == 2
     assert result.results[0].domain == "cks.nice.org.uk"
     assert result.results[1].domain == "pubmed.ncbi.nlm.nih.gov"
-    assert calls == [
-        "Какие современные рекомендации по диагностике мигрени у взрослых?",
-        "site:nice.org.uk migraine diagnosis guidelines adults",
-        "site:pubmed.ncbi.nlm.nih.gov migraine diagnosis guidelines adults",
-    ]
+    assert calls[0] == "Какие современные рекомендации по диагностике мигрени у взрослых?"
+    assert "migraine diagnosis guidelines adults" in calls
+    assert "site:nice.org.uk migraine diagnosis guidelines adults" in calls
+    assert "site:pubmed.ncbi.nlm.nih.gov migraine diagnosis guidelines adults" in calls
 
 
 def test_searxng_uses_domain_fallback_when_generic_search_has_no_results(monkeypatch):
@@ -206,10 +205,9 @@ def test_searxng_uses_domain_fallback_when_generic_search_has_no_results(monkeyp
     assert result.status == "success"
     assert len(result.results) == 1
     assert result.results[0].domain == "cks.nice.org.uk"
-    assert calls == [
-        "мигрень диагностика",
-        "site:nice.org.uk migraine diagnosis",
-    ]
+    assert calls[0] == "мигрень диагностика"
+    assert "migraine diagnosis" in calls
+    assert "site:nice.org.uk migraine diagnosis" in calls
 
 
 def test_searxng_fallback_diversifies_authoritative_domains(monkeypatch):
@@ -399,10 +397,9 @@ def test_searxng_returns_no_relevant_results_for_mismatched_medical_topic(monkey
 
     assert result.status == "no_relevant_results"
     assert result.results == []
-    assert calls == [
-        "Какие современные рекомендации по диагностике мигрени у взрослых?",
-        "site:nice.org.uk migraine diagnosis guidelines adults",
-    ]
+    assert calls[0] == "Какие современные рекомендации по диагностике мигрени у взрослых?"
+    assert "migraine diagnosis guidelines adults" in calls
+    assert "site:nice.org.uk migraine diagnosis guidelines adults" in calls
 
 
 def test_search_does_not_need_full_page_fetch_for_obviously_unrelated_result(monkeypatch):
@@ -434,7 +431,9 @@ def test_search_does_not_need_full_page_fetch_for_obviously_unrelated_result(mon
     response = SearXNGWebSearchClient().search("мигрень диагностика", limit=3)
     assert response.status == "no_relevant_results"
     assert response.results == []
-    assert len(calls) == 2
+    assert calls[0] == "мигрень диагностика"
+    assert "migraine diagnosis" in calls
+    assert any(item.startswith("site:nice.org.uk") for item in calls)
 
 
 def test_relevance_filter_checks_requested_type_of_information():
@@ -688,3 +687,121 @@ def test_answerable_web_evidence_requires_body_content_not_only_title():
 
     assert not has_answerable_web_evidence(query, title_only)
     assert has_answerable_web_evidence(query, evidence_bearing)
+
+
+def test_ct_prep_search_uses_english_medical_terms_and_keeps_radiologyinfo_allowlisted(monkeypatch):
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        # A project-specific allowlist must not silently remove built-in trusted medical domains.
+        web_safe_domains = "nice.org.uk"
+
+    queries = []
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/search"):
+            query = kwargs["params"]["q"]
+            queries.append((query, kwargs["params"]["language"]))
+            if query == "Как подготовиться к КТ?":
+                return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"results": []})
+            if query.startswith("site:radiologyinfo.org"):
+                return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"results": [{
+                    "title": "CT scan preparation - RadiologyInfo.org",
+                    "url": "https://www.radiologyinfo.org/en/info/safety-ct",
+                    "content": "Learn how to prepare for a CT scan. Depending on the exam and contrast, patients may be asked not to eat or drink for several hours before the scan.",
+                }]})
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"results": []})
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            headers={"content-type": "text/html"},
+            text=("<html><body><main>CT scan preparation instructions. Depending on the exam and whether contrast is used, "
+                  "patients may be asked not to eat or drink for several hours before the scan. Tell the imaging team "
+                  "about allergies, medications and prior reactions to contrast material.</main></body></html>"),
+        )
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+    result = SearXNGWebSearchClient().search("Как подготовиться к КТ?", limit=2)
+
+    assert result.status == "success"
+    assert result.results[0].domain == "www.radiologyinfo.org"
+    assert any(query.startswith("site:radiologyinfo.org CT scan") and language == "en" for query, language in queries)
+
+
+def test_ct_preparation_fallback_query_is_not_left_in_russian():
+    query = _fallback_search_terms("Как подготовиться к КТ?", "radiologyinfo.org")
+    assert "CT scan" in query
+    assert "preparation" in query
+    assert "contrast" in query
+
+
+def test_web_search_retries_english_query_with_english_language_setting(monkeypatch):
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        web_safe_domains = "nice.org.uk,pubmed.ncbi.nlm.nih.gov"
+
+    queries: list[tuple[str, str]] = []
+    def fake_get(url, **kwargs):
+        if "params" in kwargs:
+            queries.append((kwargs["params"]["q"], kwargs["params"]["language"]))
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"results": []})
+        raise AssertionError("No page should be fetched for an empty result list")
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+
+    result = SearXNGWebSearchClient().search(
+        "Какие современные рекомендации по диагностике мигрени у взрослых?", limit=3
+    )
+    assert result.status == "no_provider_results"
+    assert queries[0] == ("Какие современные рекомендации по диагностике мигрени у взрослых?", "ru")
+    assert any(query.startswith("migraine ") and language == "en" for query, language in queries[1:])
+
+
+def test_search_preserves_same_topic_page_as_unverified_if_strict_evidence_check_fails(monkeypatch):
+    class Settings:
+        web_search_enabled = True
+        searxng_url = "http://127.0.0.1:8080"
+        web_search_language = "ru"
+        web_search_timeout_seconds = 15
+        web_search_fallback_timeout_seconds = 8
+        web_fallback_max_domains = 1
+        web_source_max_chars = 6000
+        web_fallback_domains = "nice.org.uk"
+        web_safe_domains = "nice.org.uk,pubmed.ncbi.nlm.nih.gov"
+
+    def fake_get(url, **kwargs):
+        if "params" in kwargs:
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {"results": [{
+                    "title": "Migraine overview - NICE",
+                    "url": "https://www.nice.org.uk/topics/migraine",
+                    "content": "Migraine is a neurological condition. This page gives a general overview.",
+                }]},
+            )
+        raise AssertionError("Page-fetching is disabled in this isolated test")
+
+    monkeypatch.setattr("app.services.web_search.get_settings", lambda: Settings())
+    monkeypatch.setattr("app.services.web_search.requests.get", fake_get)
+    client = SearXNGWebSearchClient()
+    monkeypatch.setattr(client, "_enrich_results", lambda results, query="": results)
+
+    response = client.search("Какие современные рекомендации по диагностике мигрени у взрослых?", limit=1)
+    assert response.status == "success"
+    assert len(response.results) == 1
+    assert response.results[0].verification_status == "unverified"
+    assert "вручную" in (response.results[0].verification_note or "")
