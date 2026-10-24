@@ -1,7 +1,11 @@
 import React from 'react';
-import { HelpCircle, BookOpen } from 'lucide-react';
+import { HelpCircle, BookOpen, LogOut } from 'lucide-react';
 
-export const Header: React.FC = () => {
+interface HeaderProps {
+  onLogout?: () => void;
+}
+
+export const Header: React.FC<HeaderProps> = ({ onLogout }) => {
   return (
     <header className="h-[64px] bg-white border-b border-[#BFDBFE] px-6 flex items-center justify-between shrink-0 select-none z-10 shadow-xs">
       {/* Left section: Logo & Clinic Name & Status Chips */}
@@ -55,7 +59,17 @@ export const Header: React.FC = () => {
           <HelpCircle className="w-5 h-5" />
         </button>
 
-        {/* User avatar */}
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            className="p-1.5 text-[#475569] hover:text-[#EF4444] hover:bg-[#FEF2F2] rounded-lg transition-colors"
+            title="Выйти из аккаунта"
+            aria-label="Выйти из аккаунта"
+          >
+            <LogOut className="w-5 h-5" />
+          </button>
+        )}
+
         <div className="w-9 h-9 rounded-full bg-[#DBEAFE] border-2 border-[#93C5FD] flex items-center justify-center text-[#2563EB] font-bold text-sm shadow-xs">
           ИМ
         </div>

@@ -160,7 +160,13 @@ export function mapQueryResponse(
 }
 
 export function isNoAnswer(data: QueryResponse): boolean {
-  return data.sources.length === 0 || data.answer.toLowerCase().includes(NO_ANSWER_TEXT);
+  const answerText = (data.answer ?? '').trim();
+
+  if (!answerText) return true;
+
+  if (answerText.toLowerCase().includes(NO_ANSWER_TEXT)) return true;
+
+  return false;
 }
 
 export async function askKnowledgeBase(

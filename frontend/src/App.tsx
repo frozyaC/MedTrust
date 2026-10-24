@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from './components/Header';
+import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { SearchBar } from './components/SearchBar';
 import { AnswerBlock } from './components/AnswerBlock';
@@ -37,6 +38,8 @@ type ConversationIds = Record<string, string>;
 
 const UNASSIGNED_THREAD = 'unassigned';
 const CONVERSATION_IDS_STORAGE_KEY = 'medtrust.conversationIds';
+
+const AUTH_STORAGE_KEY = 'medtrust.auth';
 
 function readStoredConversationIds(): ConversationIds {
   try {
@@ -163,6 +166,10 @@ const historyThread = (): ConversationItem[] => [
 ];
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
+    () => window.localStorage.getItem(AUTH_STORAGE_KEY) === 'true',
+  );
+
   const [patients] = useState<Patient[]>(MOCK_PATIENTS);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(MOCK_PATIENTS[0]);
   const [screenState, setScreenState] = useState<ScreenState>('ready');
@@ -287,6 +294,20 @@ export default function App() {
     window.setTimeout(() => setSidebarHighlighted(false), 1600);
   };
 
+  const handleLogin = (_login: string, _password: string) => {
+    window.localStorage.setItem(AUTH_STORAGE_KEY, 'true');
+    setIsAuthenticated(true);
+    setToastMessage('Добро пожаловать в MedTrust!');
+  };
+
+  const handleLogout = () => {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    setIsAuthenticated(false);
+    setThreads({});
+    setConversationIds({});
+    setSelectedPatient(null);
+    setScreenState('empty');
+  };
 
   /**
    * Реальный запрос к бэку. Вместо setTimeout из Figma-версии —
@@ -502,9 +523,13 @@ export default function App() {
     [],
   );
 
+  if (!isAuthenticated) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
+
   return (
     <div className="h-screen flex flex-col bg-[#EFF6FF] text-[#0F172A] font-sans antialiased overflow-hidden">
-      <Header />
+      <Header onLogout={handleLogout} />
       {/* <StateSelector currentState={screenState} onSelectState={selectDemoState} /> */}
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
