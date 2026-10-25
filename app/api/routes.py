@@ -1,4 +1,5 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel, Field
 
 from app.db.database import get_connection, init_db
 from app.db.repository import ConversationRepository, KnowledgeRepository
@@ -6,8 +7,22 @@ from app.schemas.api import CreateConversationRequest, FeedbackRequest, QueryReq
 from app.services.ingestion import parse_zip
 from app.services.memory import ConversationMemory
 from app.services.rag import RagService
+from app.services.manual_web_search import manual_web_answer
 
 router = APIRouter(prefix="/api/v1")
+
+
+class ManualWebSearchRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=3000)
+    limit: int = Field(default=5, ge=1, le=8)
+
+
+@router.post("/web-search")
+def web_search(request: ManualWebSearchRequest) -> dict:
+    try:
+        return manual_web_answer(request.question, request.limit)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Ошибка веб-поиска: {exc}") from exc
 
 
 @router.get("/health")
