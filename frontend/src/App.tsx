@@ -16,6 +16,7 @@ import { ChatComposer } from './components/ChatComposer';
 import { AnswerSkeleton } from './components/AnswerSkeleton';
 import { MessageThread } from './components/MessageThread';
 import { MOCK_PATIENTS, MOCK_ANSWERS } from './data/mockData';
+import { FeedbackReasonCode, getFeedbackReason } from './data/feedbackReasons';
 import {
   AnswerData,
   ConversationItem,
@@ -377,24 +378,49 @@ export default function App() {
 
   const handleFeedback = (
     itemId: string,
-    type: 'useful' | 'useless' | 'not_found' | 'copy',
+    type: 'positive' | 'negative' | 'copy',
+    reasonCode?: FeedbackReasonCode,
+    comment?: string,
   ) => {
-    if (type === 'useful' || type === 'useless') {
+    // Положительная оценка — ставим feedback в ConversationItem
+    if (type === 'positive') {
       setCurrentThread((items) =>
         items.map((item) =>
-          item.id === itemId ? { ...item, feedback: type as FeedbackRating } : item,
+          item.id === itemId ? { ...item, feedback: 'useful' as FeedbackRating } : item,
         ),
       );
+      setToastMessage('Спасибо! Отметка «Полезно» сохранена.');
+      return;
     }
 
-    const messages = {
-      useful: 'Спасибо за отзыв! Отметка "Полезно" сохранена.',
-      useless: 'Спасибо за отзыв! Отметка зафиксирована.',
-      not_found:
-        'Спасибо! Вопрос зафиксирован, заведующий регистратурой получит уведомление.',
-      copy: 'Текст ответа скопирован в буфер обмена.',
-    };
-    setToastMessage(messages[type]);
+    // Отрицательная оценка — фиксируем как "useless" в ConversationItem
+    // (позже, когда бэк будет возвращать rating из API, заменим на реальный)
+    if (type === 'negative') {
+      setCurrentThread((items) =>
+        items.map((item) =>
+          item.id === itemId ? { ...item, feedback: 'useless' as FeedbackRating } : item,
+        ),
+      );
+
+      // TODO: отправить на бэк POST /api/v1/feedback
+      // { query_id, rating: 'negative', reason_code: reasonCode, comment }
+      // Пока бэк не поддерживает reason_code — отправляем код в комментарии
+      // (см. комментарий ниже про sendFeedback в api/query.ts)
+
+      const reasonLabel = reasonCode ? getFeedbackReason(reasonCode)?.label : null;
+      console.log('handleFeedback:', { reasonCode, reasonLabel });
+      setToastMessage(
+        reasonLabel
+          ? `Спасибо! Причина: «${reasonLabel}».`
+          : 'Спасибо! Отзыв сохранён.',
+      );
+      return;
+    }
+
+    // Копирование
+    if (type === 'copy') {
+      setToastMessage('Текст ответа скопирован в буфер обмена.');
+    }
   };
 
   const clearConversation = () => {
@@ -641,7 +667,9 @@ export default function App() {
                           </span>
                         ) : (
                           <FeedbackBar
-                            onFeedback={(type) => handleFeedback(item.id, type)}
+                            onFeedback={(type, reasonCode, comment) =>
+                              handleFeedback(item.id, type, reasonCode, comment)
+                            }
                           />
                         )}
                       </>
