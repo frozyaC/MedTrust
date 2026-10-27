@@ -1,5 +1,4 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
 
 from app.db.database import get_connection, init_db
 from app.db.repository import ConversationRepository, KnowledgeRepository
@@ -7,6 +6,7 @@ from app.schemas.api import (
     CreateConversationRequest,
     FeedbackRequest,
     GapStatusRequest,
+    ManualWebSearchRequest,
     QueryRequest,
     SearchRequest,
 )
@@ -17,12 +17,6 @@ from app.services.rag import RagService
 from app.services.manual_web_search import manual_web_answer
 
 router = APIRouter(prefix="/api/v1")
-
-
-
-class ManualWebSearchRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=3000)
-    limit: int = Field(default=5, ge=1, le=8)
 
 
 @router.post("/web-search")
@@ -122,21 +116,6 @@ def get_document(document_id: str) -> dict:
     return result
 
 
-def _answer_sources(query_id: str) -> list[dict]:
-    """Wiki sources shown with the answer the user rated; empty if unavailable."""
-    try:
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT sources FROM chat_messages "
-                "WHERE query_id=%s AND role='assistant' ORDER BY created_at DESC LIMIT 1",
-                (query_id,),
-            ).fetchone()
-    except Exception:
-        return []
-    sources = row[0] if row and isinstance(row[0], list) else []
-    return [s for s in sources if isinstance(s, dict) and s.get("source_type", "wiki") == "wiki"]
-
-
 @router.post("/feedback")
 def feedback(request: FeedbackRequest) -> dict:
     comment = request.comment
@@ -158,7 +137,7 @@ def feedback(request: FeedbackRequest) -> dict:
             reason=f"user_feedback:{request.reason_code}",
             conversation_id=str(request.conversation_id) if request.conversation_id else None,
             query_id=str(request.query_id),
-            wiki_candidates=_answer_sources(str(request.query_id)),
+            wiki_candidates=ConversationRepository().answer_wiki_sources(str(request.query_id)),
             source="user_feedback",
         )
     return {"status": "saved", "gap_recorded": gap_recorded}

@@ -227,3 +227,17 @@ class ConversationRepository:
             "sources": r[4] if isinstance(r[4], list) else [],
             "created_at": r[5].isoformat(),
         } for r in rows]
+
+    def answer_wiki_sources(self, query_id: str) -> list[dict[str, Any]]:
+        """Wiki sources shown with the answer for a query; empty if unavailable."""
+        try:
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT sources FROM chat_messages "
+                    "WHERE query_id=%s AND role='assistant' ORDER BY created_at DESC LIMIT 1",
+                    (query_id,),
+                ).fetchone()
+        except Exception:
+            return []
+        sources = row[0] if row and isinstance(row[0], list) else []
+        return [s for s in sources if isinstance(s, dict) and s.get("source_type", "wiki") == "wiki"]

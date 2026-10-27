@@ -24,6 +24,11 @@ class QueryRequest(BaseModel):
     conversation_id: UUID | None = None
 
 
+class ManualWebSearchRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=3000)
+    limit: int = Field(default=5, ge=1, le=8)
+
+
 class CreateConversationRequest(BaseModel):
     title: str | None = Field(default=None, max_length=120)
 
