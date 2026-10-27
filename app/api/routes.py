@@ -1,20 +1,22 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
 
 from app.db.database import get_connection, init_db
 from app.db.repository import ConversationRepository, KnowledgeRepository
-from app.schemas.api import CreateConversationRequest, FeedbackRequest, QueryRequest, SearchRequest
+from app.schemas.api import (
+    CreateConversationRequest,
+    FeedbackRequest,
+    GapStatusRequest,
+    ManualWebSearchRequest,
+    QueryRequest,
+    SearchRequest,
+)
 from app.services.ingestion import parse_zip
+from app.services.knowledge_gap_tracker import GAP_REASON_CODES, KnowledgeGapTracker
 from app.services.memory import ConversationMemory
 from app.services.rag import RagService
 from app.services.manual_web_search import manual_web_answer
 
 router = APIRouter(prefix="/api/v1")
-
-
-class ManualWebSearchRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=3000)
-    limit: int = Field(default=5, ge=1, le=8)
 
 
 @router.post("/web-search")
@@ -74,7 +76,10 @@ def query(request: QueryRequest) -> dict:
 @router.post("/conversations")
 def create_conversation(request: CreateConversationRequest) -> dict:
     conversation_id = ConversationMemory().create_conversation(request.title)
-    return ConversationRepository().get(conversation_id) or {"id": conversation_id, "title": request.title}
+    return ConversationRepository().get(conversation_id) or {
+        "id": conversation_id,
+        "title": request.title,
+    }
 
 
 @router.get("/conversations")
@@ -113,8 +118,45 @@ def get_document(document_id: str) -> dict:
 
 @router.post("/feedback")
 def feedback(request: FeedbackRequest) -> dict:
+    comment = request.comment
+    if request.reason_code:
+        comment = f"[{request.reason_code}] {comment or ''}".strip()
     try:
-        KnowledgeRepository().save_feedback(str(request.query_id), request.rating, request.comment)
-        return {"status": "saved"}
+        KnowledgeRepository().save_feedback(str(request.query_id), request.rating, comment)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Ошибка сохранения feedback: {exc}") from exc
+
+    gap_recorded = False
+    if (
+        request.rating == "negative"
+        and request.reason_code in GAP_REASON_CODES
+        and request.question
+    ):
+        gap_recorded = KnowledgeGapTracker().record_gap(
+            query=request.question,
+            reason=f"user_feedback:{request.reason_code}",
+            conversation_id=str(request.conversation_id) if request.conversation_id else None,
+            query_id=str(request.query_id),
+            wiki_candidates=ConversationRepository().answer_wiki_sources(str(request.query_id)),
+            source="user_feedback",
+        )
+    return {"status": "saved", "gap_recorded": gap_recorded}
+
+
+@router.get("/knowledge-gaps")
+def list_knowledge_gaps() -> list[dict]:
+    try:
+        return KnowledgeGapTracker().list_gaps()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки пробелов: {exc}") from exc
+
+
+@router.patch("/knowledge-gaps/{gap_id}")
+def update_knowledge_gap(gap_id: int, request: GapStatusRequest) -> dict:
+    try:
+        updated = KnowledgeGapTracker().update_status(gap_id, request.status)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ошибка обновления пробела: {exc}") from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Пробел не найден")
+    return {"status": request.status}
