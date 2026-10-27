@@ -74,7 +74,7 @@ def query(request: QueryRequest) -> dict:
 @router.post("/conversations")
 def create_conversation(request: CreateConversationRequest) -> dict:
     conversation_id = ConversationMemory().create_conversation(request.title)
-    return ConversationRepository().get_conversation(conversation_id) or {
+    return ConversationRepository().get(conversation_id) or {
         "id": conversation_id,
         "title": request.title,
     }
@@ -84,26 +84,26 @@ def create_conversation(request: CreateConversationRequest) -> dict:
 def list_conversations(limit: int = 50) -> dict:
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=400, detail="limit должен быть от 1 до 100")
-    return {"conversations": ConversationRepository().list_conversations(limit)}
+    return {"conversations": ConversationRepository().list(limit)}
 
 
 @router.get("/conversations/{conversation_id}")
 def get_conversation(conversation_id: str) -> dict:
     repo = ConversationRepository()
-    conversation = repo.get_conversation(conversation_id)
+    conversation = repo.get(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Диалог не найден")
-    return {**conversation, "messages": repo.list_messages(conversation_id)}
+    return {**conversation, "messages": repo.messages(conversation_id)}
 
 
 @router.get("/conversations/{conversation_id}/messages")
 def get_messages(conversation_id: str, limit: int = 100) -> dict:
     repo = ConversationRepository()
-    if not repo.get_conversation(conversation_id):
+    if not repo.get(conversation_id):
         raise HTTPException(status_code=404, detail="Диалог не найден")
     if not 1 <= limit <= 500:
         raise HTTPException(status_code=400, detail="limit должен быть от 1 до 500")
-    return {"messages": repo.list_messages(conversation_id, limit)}
+    return {"messages": repo.messages(conversation_id, limit)}
 
 
 @router.get("/knowledge/{document_id}")
