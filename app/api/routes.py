@@ -3,17 +3,21 @@ from pydantic import BaseModel, Field
 
 from app.db.database import get_connection, init_db
 from app.db.repository import ConversationRepository, KnowledgeRepository
-from app.schemas.api import CreateConversationRequest, FeedbackRequest, QueryRequest, SearchRequest
+from app.schemas.api import (
+    CreateConversationRequest,
+    FeedbackRequest,
+    GapStatusRequest,
+    QueryRequest,
+    SearchRequest,
+)
 from app.services.ingestion import parse_zip
-from app.services.knowledge_gap_tracker import KnowledgeGapTracker
+from app.services.knowledge_gap_tracker import GAP_REASON_CODES, KnowledgeGapTracker
 from app.services.memory import ConversationMemory
 from app.services.rag import RagService
 from app.services.manual_web_search import manual_web_answer
 
 router = APIRouter(prefix="/api/v1")
 
-# Должно совпадать с причинами createsGap в frontend/src/data/feedbackReasons.ts
-GAP_REASON_CODES = {"no_knowledge_base_answer", "knowledge_incomplete", "knowledge_outdated"}
 
 
 class ManualWebSearchRequest(BaseModel):
@@ -118,6 +122,21 @@ def get_document(document_id: str) -> dict:
     return result
 
 
+def _answer_sources(query_id: str) -> list[dict]:
+    """Wiki sources shown with the answer the user rated; empty if unavailable."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT sources FROM chat_messages "
+                "WHERE query_id=%s AND role='assistant' ORDER BY created_at DESC LIMIT 1",
+                (query_id,),
+            ).fetchone()
+    except Exception:
+        return []
+    sources = row[0] if row and isinstance(row[0], list) else []
+    return [s for s in sources if isinstance(s, dict) and s.get("source_type", "wiki") == "wiki"]
+
+
 @router.post("/feedback")
 def feedback(request: FeedbackRequest) -> dict:
     comment = request.comment
@@ -139,5 +158,26 @@ def feedback(request: FeedbackRequest) -> dict:
             reason=f"user_feedback:{request.reason_code}",
             conversation_id=str(request.conversation_id) if request.conversation_id else None,
             query_id=str(request.query_id),
+            wiki_candidates=_answer_sources(str(request.query_id)),
+            source="user_feedback",
         )
     return {"status": "saved", "gap_recorded": gap_recorded}
+
+
+@router.get("/knowledge-gaps")
+def list_knowledge_gaps() -> list[dict]:
+    try:
+        return KnowledgeGapTracker().list_gaps()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки пробелов: {exc}") from exc
+
+
+@router.patch("/knowledge-gaps/{gap_id}")
+def update_knowledge_gap(gap_id: int, request: GapStatusRequest) -> dict:
+    try:
+        updated = KnowledgeGapTracker().update_status(gap_id, request.status)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ошибка обновления пробела: {exc}") from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Пробел не найден")
+    return {"status": request.status}

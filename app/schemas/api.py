@@ -28,6 +28,11 @@ class CreateConversationRequest(BaseModel):
     title: str | None = Field(default=None, max_length=120)
 
 
+class GapStatusRequest(BaseModel):
+    status: Literal["open", "in_review", "resolved", "dismissed"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
 class FeedbackRequest(BaseModel):
     query_id: str
     rating: Literal["positive", "negative"]

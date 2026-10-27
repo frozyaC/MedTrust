@@ -24,7 +24,6 @@ import {
 import {
   DEFAULT_FILTERS,
   DEMO_ADMIN_USER,
-  DEMO_GAPS,
   DISMISS_REASON_OPTIONS,
   PERIOD_OPTIONS,
   STATUS_OPTIONS,
@@ -217,7 +216,7 @@ export function KnowledgeGapsPage() {
   const initialStatuses = parseStatusFilter(params.get('status'));
 
   const [role, setRole] = useState<AdminRole>(initialRole);
-  const [gaps, setGaps] = useState<KnowledgeGap[]>(DEMO_GAPS);
+  const [gaps, setGaps] = useState<KnowledgeGap[]>([]);
   const [period, setPeriod] = useState<GapPeriod>(initialPeriod);
   const [customFrom, setCustomFrom] = useState(() =>
     toDateInputValue(new Date(Date.now() - 7 * DAY_MS)),
@@ -234,11 +233,7 @@ export function KnowledgeGapsPage() {
   const [pageState, setPageState] = useState<PageState>('loading');
   const [selectedGapId, setSelectedGapId] = useState<string | null>(() => {
     if (initialRole === 'developer' || params.get('panel') === 'closed') return null;
-    const requestedGap = params.get('gap');
-    if (requestedGap && DEMO_GAPS.some((gap) => gap.id === requestedGap)) {
-      return requestedGap;
-    }
-    return null;  // ← было: return DEMO_GAPS[4]?.id ?? null;
+    return params.get('gap');
   });
   const [resolveTarget, setResolveTarget] = useState<KnowledgeGap | null>(null);
   const [dismissTarget, setDismissTarget] = useState<KnowledgeGap | null>(null);
@@ -262,19 +257,13 @@ export function KnowledgeGapsPage() {
     }
 
     try {
-      const loaded = await fetchKnowledgeGaps({
-        period,
-        customFrom,
-        customTo,
-        filters,
-        sort,
-      });
+      const loaded = await fetchKnowledgeGaps();
       setGaps(loaded);
       setPageState('ready');
     } catch {
       setPageState('error');
     }
-  }, [period, customFrom, customTo, filters, sort]);
+  }, []);
 
   useEffect(() => {
     void loadGaps();
