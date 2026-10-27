@@ -79,7 +79,13 @@ export function formatDuration(ms: number): string {
     return `${value} ${pluralRu(days, ['день', 'дня', 'дней'])}`;
   }
 
-  const hours = Math.max(1, Math.round(ms / (60 * 60 * 1000)));
+  const HOUR_MS = 60 * 60 * 1000;
+  if (ms < HOUR_MS) {
+    const minutes = Math.max(1, Math.round(ms / 60_000));
+    return `${minutes} ${pluralRu(minutes, ['минута', 'минуты', 'минут'])}`;
+  }
+
+  const hours = Math.round(ms / HOUR_MS);
   return `${hours} ${pluralRu(hours, ['час', 'часа', 'часов'])}`;
 }
 
