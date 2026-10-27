@@ -32,3 +32,6 @@ class FeedbackRequest(BaseModel):
     query_id: str
     rating: Literal["positive", "negative"]
     comment: str | None = Field(default=None, max_length=4000)
+    reason_code: str | None = Field(default=None, max_length=64)
+    question: str | None = Field(default=None, max_length=4000)
+    conversation_id: UUID | None = None

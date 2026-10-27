@@ -24,7 +24,7 @@ import {
   Patient,
   ScreenState,
 } from './types';
-import { QueryApiError, askAndBuildItem, loadConversationItems } from './api/query';
+import { QueryApiError, askAndBuildItem, loadConversationItems, sendFeedback } from './api/query';
 import {
   AlertOctagon,
   FileQuestion,
@@ -402,13 +402,22 @@ export default function App() {
         ),
       );
 
-      // TODO: отправить на бэк POST /api/v1/feedback
-      // { query_id, rating: 'negative', reason_code: reasonCode, comment }
-      // Пока бэк не поддерживает reason_code — отправляем код в комментарии
-      // (см. комментарий ниже про sendFeedback в api/query.ts)
+      const target = currentThread.find((item) => item.id === itemId);
+      const queryId = target?.answer?.queryId;
+      if (queryId) {
+        void sendFeedback({
+          queryId,
+          rating: 'negative',
+          reasonCode,
+          comment,
+          question: target?.question,
+          conversationId: conversationIds[threadKey],
+        }).catch(() => {
+          setToastMessage('Не удалось отправить отзыв на сервер.');
+        });
+      }
 
       const reasonLabel = reasonCode ? getFeedbackReason(reasonCode)?.label : null;
-      console.log('handleFeedback:', { reasonCode, reasonLabel });
       setToastMessage(
         reasonLabel
           ? `Спасибо! Причина: «${reasonLabel}».`

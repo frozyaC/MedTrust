@@ -148,6 +148,12 @@ class KnowledgeRepository:
     def save_feedback(self, query_id: str, rating: str, comment: str | None) -> None:
         with get_connection() as conn:
             conn.execute(
+                "CREATE TABLE IF NOT EXISTS query_feedback ("
+                "id UUID PRIMARY KEY, query_id UUID NOT NULL, "
+                "rating TEXT NOT NULL CHECK (rating IN ('positive','negative')), "
+                "comment TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+            )
+            conn.execute(
                 "INSERT INTO query_feedback (id,query_id,rating,comment) VALUES (%s,%s,%s,%s)",
                 (uuid.uuid4(), uuid.UUID(query_id), rating, comment),
             )

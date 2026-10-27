@@ -291,6 +291,32 @@ export function messagesToConversationItems(messages: StoredChatMessage[]): Conv
   return items;
 }
 
+export async function sendFeedback(payload: {
+  queryId: string;
+  rating: 'positive' | 'negative';
+  reasonCode?: string;
+  comment?: string;
+  question?: string;
+  conversationId?: string;
+}): Promise<{ status: string; gap_recorded?: boolean }> {
+  const response = await fetch(`${apiBaseUrl()}/api/v1/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query_id: payload.queryId,
+      rating: payload.rating,
+      ...(payload.reasonCode ? { reason_code: payload.reasonCode } : {}),
+      ...(payload.comment ? { comment: payload.comment } : {}),
+      ...(payload.question ? { question: payload.question } : {}),
+      ...(payload.conversationId ? { conversation_id: payload.conversationId } : {}),
+    }),
+  });
+  if (!response.ok) {
+    throw new QueryApiError(`Не удалось отправить отзыв: ${response.status}`, response.status);
+  }
+  return response.json();
+}
+
 export async function loadConversationItems(conversationId: string): Promise<ConversationItem[]> {
   let response: Response;
   try {

@@ -74,6 +74,17 @@ CREATE TABLE IF NOT EXISTS conversation_memory (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS query_feedback (
+    id UUID PRIMARY KEY,
+    query_id UUID NOT NULL,
+    rating TEXT NOT NULL CHECK (rating IN ('positive', 'negative')),
+    comment TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS query_feedback_query_idx
+    ON query_feedback (query_id);
+
 CREATE TABLE IF NOT EXISTS knowledge_index_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     archive_hash TEXT NOT NULL,

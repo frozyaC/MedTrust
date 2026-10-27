@@ -5,11 +5,15 @@ from app.db.database import get_connection, init_db
 from app.db.repository import ConversationRepository, KnowledgeRepository
 from app.schemas.api import CreateConversationRequest, FeedbackRequest, QueryRequest, SearchRequest
 from app.services.ingestion import parse_zip
+from app.services.knowledge_gap_tracker import KnowledgeGapTracker
 from app.services.memory import ConversationMemory
 from app.services.rag import RagService
 from app.services.manual_web_search import manual_web_answer
 
 router = APIRouter(prefix="/api/v1")
+
+# Должно совпадать с причинами createsGap в frontend/src/data/feedbackReasons.ts
+GAP_REASON_CODES = {"no_knowledge_base_answer", "knowledge_incomplete", "knowledge_outdated"}
 
 
 class ManualWebSearchRequest(BaseModel):
@@ -116,8 +120,24 @@ def get_document(document_id: str) -> dict:
 
 @router.post("/feedback")
 def feedback(request: FeedbackRequest) -> dict:
+    comment = request.comment
+    if request.reason_code:
+        comment = f"[{request.reason_code}] {comment or ''}".strip()
     try:
-        KnowledgeRepository().save_feedback(str(request.query_id), request.rating, request.comment)
-        return {"status": "saved"}
+        KnowledgeRepository().save_feedback(str(request.query_id), request.rating, comment)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Ошибка сохранения feedback: {exc}") from exc
+
+    gap_recorded = False
+    if (
+        request.rating == "negative"
+        and request.reason_code in GAP_REASON_CODES
+        and request.question
+    ):
+        gap_recorded = KnowledgeGapTracker().record_gap(
+            query=request.question,
+            reason=f"user_feedback:{request.reason_code}",
+            conversation_id=str(request.conversation_id) if request.conversation_id else None,
+            query_id=str(request.query_id),
+        )
+    return {"status": "saved", "gap_recorded": gap_recorded}
