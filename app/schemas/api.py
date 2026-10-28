@@ -24,11 +24,24 @@ class QueryRequest(BaseModel):
     conversation_id: UUID | None = None
 
 
+class ManualWebSearchRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=3000)
+    limit: int = Field(default=5, ge=1, le=8)
+
+
 class CreateConversationRequest(BaseModel):
     title: str | None = Field(default=None, max_length=120)
+
+
+class GapStatusRequest(BaseModel):
+    status: Literal["open", "in_review", "resolved", "dismissed"]
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class FeedbackRequest(BaseModel):
     query_id: str
     rating: Literal["positive", "negative"]
     comment: str | None = Field(default=None, max_length=4000)
+    reason_code: str | None = Field(default=None, max_length=64)
+    question: str | None = Field(default=None, max_length=4000)
+    conversation_id: UUID | None = None
