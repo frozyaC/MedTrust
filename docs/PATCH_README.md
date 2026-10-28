@@ -129,3 +129,42 @@ Unit-тесты не подтверждают подключение к ваше
 Эндпоинт использует SearXNG и GigaChat, без Wiki, RagService, KnowledgeGapTracker и записи в БД. В отличие от стандартного поиска, он **не отбрасывает источники по тематической релевантности**, но сохраняет проверку безопасности URL (HTTPS и allowlist). Ответ формируется по полученным материалам, включая слабые, с предупреждением в конце. Источники содержат `relevance` и `evidence_status`.
 
 Ограничение: если SearXNG не вернул разрешённых URL, содержательный ответ не гарантирован. Доступность GigaChat/SearXNG в этом окружении не проверялась. Стандартный `/api/v1/query` не изменён.
+
+
+# MedTrust: `/api/v1/query` только по локальной Wiki
+
+## Что изменено
+
+- `/api/v1/query` больше не создаёт клиент SearXNG и не вызывает веб-поиск.
+- Поиск документов по-прежнему выполняется через локальный hybrid search PostgreSQL/pgvector.
+- GigaChat формирует ответ только по найденным фрагментам Wiki. Если подходящих источников нет, система не просит модель отвечать из общих знаний.
+- Сохранены `conversation_id`, contextualizer, атрибуция утверждений источникам и `KnowledgeGapTracker`.
+- Для запросов об актуальных рекомендациях в ответе и диагностике явно отмечается, что внешняя актуальность не проверялась.
+- Убраны автоматические ссылки PubMed/NHS/NICE, которые раньше добавлялись как запасной вариант при недостатке локальных источников.
+- Формат ответа сохраняет поля совместимости: `web_search_attempted=false`, `web_search_used=false`, `web_search_status="not_attempted"`; добавлено `web_search_policy="disabled_for_query_endpoint"`.
+- `routes.py` и отдельный `POST /api/v1/web-search` не меняются.
+
+## Совместимость
+
+Файл `rag.py` собран на основе версии MedTrust, в которой уже есть `app/services/contextualizer.py`, `app/services/knowledge_gap_tracker.py` и `app/services/web_evidence_guard.py`. Не заменяйте им заметно отличающуюся версию `rag.py` без сравнения изменений.
+
+## Установка в PowerShell
+
+Запустите команды из корня репозитория. Сначала создайте резервные копии:
+
+```powershell
+Copy-Item .\app\services\rag.py .\app\services\rag.py.bak
+Copy-Item .\app\services\answer_presentation.py .\app\services\answer_presentation.py.bak
+```
+
+Распакуйте архив во временную папку и скопируйте файлы приложения:
+
+```powershell
+Expand-Archive -Path .\medtrust_query_db_only_patch.zip -DestinationPath .\medtrust_query_db_only_patch -Force
+Copy-Item .\medtrust_query_db_only_patch\app\services\rag.py .\app\services\rag.py -Force
+Copy-Item .\medtrust_query_db_only_patch\app\services\answer_presentation.py .\app\services\answer_presentation.py -Force
+Copy-Item .\medtrust_query_db_only_patch\tests\test_answer_presentation.py .\tests\test_answer_presentation.py -Force
+Copy-Item .\medtrust_query_db_only_patch\tests\test_query_database_only_policy.py .\tests\test_query_database_only_policy.py -Force
+```
+
+Затем выполните `pytest -q` и перезапустите FastAPI. Ручку `/api/v1/query` проверьте запросом, по которому в Wiki есть документы, и запросом, по которому их нет. Для обоих случаев в ответе должно быть `web_search_attempted: false`. Отдельно проверьте `POST /api/v1/web-search`, который продолжает использовать собственный сервис.

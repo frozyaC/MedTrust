@@ -31,15 +31,15 @@ def test_bullet_formatter_preserves_numbering_when_source_has_blank_lines() -> N
 
 def test_price_fallback_does_not_claim_verified_sources_were_checked() -> None:
     result = safe_no_evidence_response("Сколько стоит гастроскопия?")
-    assert "среди доступных веб-результатов не удалось найти источник" in result
+    assert "локальной базе знаний MedTrust не удалось найти материал" in result
     assert "подтверждающий стоимость гастроскопии" in result
-    assert "проверенных веб-источниках не найден" not in result
+    assert "веб-результатов" not in result
 
 
 def test_contraindication_fallback_uses_precise_neutral_wording() -> None:
     result = safe_no_evidence_response(
         "Какие противопоказания к МРТ с контрастированием нужно проверить?"
     )
-    assert "не удалось найти источник" in result
+    assert "не найден материал" in result
     assert "именно для МРТ с контрастированием" in result
     assert "не буду перечислять неподтверждённые ограничения" in result
