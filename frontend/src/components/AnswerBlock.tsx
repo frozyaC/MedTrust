@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AnswerData, Patient } from '../types';
 import { Sparkles, User, AlertTriangle } from 'lucide-react';
+import { GapBanner } from './GapBanner';
 
 interface AnswerBlockProps {
   answer: AnswerData;
@@ -12,6 +13,7 @@ interface AnswerBlockProps {
   onViewConflictSources?: () => void;
   hideQuestion?: boolean;
   considersHistory?: boolean;
+  onCancelGap?: (gapId: string | number) => Promise<void>;
 }
 
 /**
@@ -42,6 +44,7 @@ export const AnswerBlock: React.FC<AnswerBlockProps> = ({
   onViewConflictSources,
   hideQuestion = false,
   considersHistory = false,
+  onCancelGap,
 }) => {
   const getPersonalizationText = () => {
     if (!selectedPatient) return 'Без персонализации';
@@ -98,6 +101,18 @@ export const AnswerBlock: React.FC<AnswerBlockProps> = ({
           </div>
         </div>
       )}
+
+      {answer.gap?.created &&
+        answer.gap.id !== undefined &&
+        !answer.gap.cancelled &&
+        onCancelGap && (
+          <GapBanner
+            gapId={answer.gap.id}
+            source={answer.gap.source}
+            onCancel={onCancelGap}
+          />
+        )
+      }
 
       <div className="bg-white rounded-xl border border-[#BFDBFE] p-6 shadow-sm relative overflow-hidden">
         <div className="flex items-center justify-between pb-4 mb-4 border-b border-[#EFF6FF]">

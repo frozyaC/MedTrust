@@ -41,8 +41,11 @@ export interface AnswerData {
   /** Автоматически зафиксированный пробел в БЗ (из POST /query) */
   gap?: {
     created: boolean;
-    id?: string;
+    /** id записи в knowledge_gaps; бэк может вернуть int (BIGSERIAL) или string */
+    id?: string | number;
     source?: 'automatic' | 'user_feedback';
+    /** Локальный флаг: пользователь отменил пробел через PATCH (status=dismissed) */
+    cancelled?: boolean;
   };
 
   /** Признак, что ответ получен из веб-поиска (не из БЗ) */

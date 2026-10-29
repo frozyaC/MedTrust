@@ -317,6 +317,36 @@ export async function sendFeedback(payload: {
   return response.json();
 }
 
+/**
+ * Отмена автоматически зафиксированного пробела в БЗ.
+ */
+export async function cancelGap(gapId: string | number, note?: string): Promise<void> {
+  const response = await fetch(
+    `${apiBaseUrl()}/api/v1/knowledge-gaps/${encodeURIComponent(String(gapId))}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'dismissed',
+        ...(note ? { note } : {}),
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    let detail = `Не удалось отменить пробел: ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === 'string') {
+        detail = payload.detail;
+      }
+    } catch {
+      // keep status message
+    }
+    throw new QueryApiError(detail, response.status);
+  }
+}
+
 export async function loadConversationItems(conversationId: string): Promise<ConversationItem[]> {
   let response: Response;
   try {
