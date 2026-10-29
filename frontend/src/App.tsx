@@ -389,59 +389,73 @@ export default function App() {
     window.setTimeout(() => setHighlightedSource(null), 2500);
   };
 
-  const handleFeedback = (
+  const handleFeedback = async (
     itemId: string,
     type: 'positive' | 'negative' | 'copy',
     reasonCode?: FeedbackReasonCode,
     comment?: string,
   ) => {
-    // Положительная оценка — ставим feedback в ConversationItem
-    if (type === 'positive') {
-      setCurrentThread((items) =>
-        items.map((item) =>
-          item.id === itemId ? { ...item, feedback: 'useful' as FeedbackRating } : item,
-        ),
-      );
-      setToastMessage('Спасибо! Отметка «Полезно» сохранена.');
+    if (type === 'copy') {
+      setToastMessage('Текст ответа скопирован в буфер обмена.');
       return;
     }
 
-    // Отрицательная оценка — фиксируем как "useless" в ConversationItem
-    // (позже, когда бэк будет возвращать rating из API, заменим на реальный)
-    if (type === 'negative') {
-      setCurrentThread((items) =>
-        items.map((item) =>
-          item.id === itemId ? { ...item, feedback: 'useless' as FeedbackRating } : item,
-        ),
-      );
+    // Находим сообщение, чтобы достать queryId и текст вопроса
+    const item = currentThread.find((candidate) => candidate.id === itemId);
+    const queryId = item?.answer?.queryId;
+    const question = item?.question;
 
-      const target = currentThread.find((item) => item.id === itemId);
-      const queryId = target?.answer?.queryId;
-      if (queryId) {
-        void sendFeedback({
-          queryId,
-          rating: 'negative',
-          reasonCode,
-          comment,
-          question: target?.question,
-          conversationId: conversationIds[threadKey],
-        }).catch(() => {
-          setToastMessage('Не удалось отправить отзыв на сервер.');
-        });
+    // Локально обновляем UI независимо от результата API
+    setCurrentThread((items) =>
+      items.map((candidate) =>
+        candidate.id === itemId
+          ? { ...candidate, feedback: type === 'positive' ? 'useful' : 'useless' }
+          : candidate,
+      ),
+    );
+
+    // Без queryId (демо-сообщение, старая история без id) — только локально
+    if (!queryId) {
+      setToastMessage(
+        type === 'positive'
+          ? 'Спасибо! Отметка «Полезно» сохранена локально.'
+          : 'Спасибо! Отзыв сохранён локально (ID запроса недоступен).',
+      );
+      return;
+    }
+
+    try {
+      const result = await sendFeedback({
+        queryId,
+        rating: type,
+        reasonCode,
+        comment,
+        question,
+        conversationId: conversationIds[threadKey],
+      });
+
+      if (type === 'positive') {
+        setToastMessage('Спасибо! Отметка «Полезно» сохранена.');
+        return;
       }
 
       const reasonLabel = reasonCode ? getFeedbackReason(reasonCode)?.label : null;
-      setToastMessage(
-        reasonLabel
-          ? `Спасибо! Причина: «${reasonLabel}».`
-          : 'Спасибо! Отзыв сохранён.',
-      );
-      return;
-    }
-
-    // Копирование
-    if (type === 'copy') {
-      setToastMessage('Текст ответа скопирован в буфер обмена.');
+      if (result.gap_recorded) {
+        setToastMessage(
+          reasonLabel
+            ? `Пробел в БЗ зафиксирован: «${reasonLabel}».`
+            : 'Пробел в базе знаний зафиксирован.',
+        );
+      } else {
+        setToastMessage(
+          reasonLabel
+            ? `Спасибо! Причина: «${reasonLabel}».`
+            : 'Спасибо! Отзыв сохранён.',
+        );
+      }
+    } catch (error) {
+      const detail = error instanceof QueryApiError ? error.message : 'Неизвестная ошибка';
+      setToastMessage(`Не удалось отправить отзыв: ${detail}. Отметка сохранена локально.`);
     }
   };
 

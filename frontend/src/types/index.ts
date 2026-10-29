@@ -37,6 +37,16 @@ export interface AnswerData {
   conflictWarning?: string;
   wikiStrongMatch?: boolean;
   usedSourceIds?: string[];
+
+  /** Автоматически зафиксированный пробел в БЗ (из POST /query) */
+  gap?: {
+    created: boolean;
+    id?: string;
+    source?: 'automatic' | 'user_feedback';
+  };
+
+  /** Признак, что ответ получен из веб-поиска (не из БЗ) */
+  webSearchUsed?: boolean;
 }
 
 /** Оценка ответа регистратором */
@@ -71,3 +81,9 @@ export type ScreenState =
   | 'conflict'
   | 'error'
   | 'history';
+
+/** Ответ POST /api/v1/feedback */
+export interface FeedbackResponse {
+  status: string;
+  gap_recorded: boolean;
+}
