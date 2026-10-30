@@ -30,12 +30,20 @@ export interface GapFeedback {
   reasonCode?: GapReason;
 }
 
+/** A KB owner's comment from `knowledge_gap_comments`; append-only. */
+export interface GapComment {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 /**
  * One `knowledge_gaps` event as it is shown to the KB owner.
  *
  * The first iteration stores one event per `query_id`: automatic and
  * user-confirmed events are not merged. Diagnostic fields are read-only;
- * only `status`, `ownerComment`, `resolvedAt` and `resolvedBy` change.
+ * only `status`, `comments`, `resolvedAt` and `resolvedBy` change.
  */
 export interface KnowledgeGap {
   id: string;
@@ -51,7 +59,7 @@ export interface KnowledgeGap {
   confidence?: number;
   sourceIds: KnowledgeSourceRef[];
   feedback?: GapFeedback;
-  ownerComment: string;
+  comments: GapComment[];
   webSearchUsed: boolean;
   createdAt: string;
   updatedAt: string;

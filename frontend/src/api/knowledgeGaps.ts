@@ -1,4 +1,4 @@
-import { GapStatus, KnowledgeGap } from '../types/knowledgeGaps';
+import { GapComment, GapStatus, KnowledgeGap } from '../types/knowledgeGaps';
 
 function apiBaseUrl(): string {
   return import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
@@ -22,27 +22,44 @@ export async function fetchKnowledgeGaps(): Promise<KnowledgeGap[]> {
   return (await response.json()) as KnowledgeGap[];
 }
 
-/** Смена статуса пробела: `PATCH /api/v1/knowledge-gaps/{id}`. */
+/**
+ * Смена статуса пробела: `PATCH /api/v1/knowledge-gaps/{id}`.
+ * Непустой `note` сервер сохраняет как комментарий от `author` и возвращает его.
+ */
 export async function updateGapStatus(
   gapId: string,
   status: GapStatus,
-  options?: { note?: string },
-): Promise<void> {
+  options?: { note?: string; author?: string },
+): Promise<GapComment | undefined> {
   const response = await fetch(`${apiBaseUrl()}/api/v1/knowledge-gaps/${gapId}`, {
     method: 'PATCH',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ status, note: options?.note }),
+    body: JSON.stringify({ status, note: options?.note, author: options?.author }),
   });
 
   if (!response.ok) {
     throw new Error(`Не удалось изменить статус: ${response.status}`);
   }
+
+  const data = (await response.json()) as { comment?: GapComment };
+  return data.comment;
 }
 
-/**
- * Комментарий владельца БЗ. В таблице `knowledge_gaps` под него нет колонки,
- * поэтому сейчас он живёт только в состоянии страницы и не сохраняется на сервере.
- */
-export async function saveGapComment(_gapId: string, _comment: string): Promise<void> {
-  return;
+/** Комментарий владельца БЗ: `POST /api/v1/knowledge-gaps/{id}/comments`. */
+export async function addGapComment(
+  gapId: string,
+  body: string,
+  author: string,
+): Promise<GapComment> {
+  const response = await fetch(`${apiBaseUrl()}/api/v1/knowledge-gaps/${gapId}/comments`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ body, author }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Не удалось сохранить комментарий: ${response.status}`);
+  }
+
+  return (await response.json()) as GapComment;
 }

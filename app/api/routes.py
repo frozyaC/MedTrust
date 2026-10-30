@@ -5,6 +5,7 @@ from app.db.repository import ConversationRepository, KnowledgeRepository
 from app.schemas.api import (
     CreateConversationRequest,
     FeedbackRequest,
+    GapCommentRequest,
     GapStatusRequest,
     ManualWebSearchRequest,
     QueryRequest,
@@ -154,9 +155,25 @@ def list_knowledge_gaps() -> list[dict]:
 @router.patch("/knowledge-gaps/{gap_id}")
 def update_knowledge_gap(gap_id: int, request: GapStatusRequest) -> dict:
     try:
-        updated = KnowledgeGapTracker().update_status(gap_id, request.status)
+        updated = KnowledgeGapTracker().update_status(
+            gap_id, request.status, request.note, request.author
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ошибка обновления пробела: {exc}") from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Пробел не найден")
-    return {"status": request.status}
+    return updated
+
+
+@router.post("/knowledge-gaps/{gap_id}/comments")
+def add_knowledge_gap_comment(gap_id: int, request: GapCommentRequest) -> dict:
+    body = request.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Комментарий пуст")
+    try:
+        comment = KnowledgeGapTracker().add_comment(gap_id, request.author.strip(), body)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения комментария: {exc}") from exc
+    if not comment:
+        raise HTTPException(status_code=404, detail="Пробел не найден")
+    return comment

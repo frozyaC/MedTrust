@@ -11,7 +11,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { KnowledgeGap } from '../../types/knowledgeGaps';
-import { shortId } from '../../lib/format';
+import { formatDateTime, shortId } from '../../lib/format';
 import { lockBodyScroll } from '../../lib/scrollLock';
 import { CopyButton } from './CopyButton';
 import { SourceBadge, StatusBadge } from './GapBadges';
@@ -77,14 +77,14 @@ export function GapDetailPanel({
   onCopyId,
   closeOnEscape = true,
 }: GapDetailPanelProps) {
-  const [comment, setComment] = useState(gap.ownerComment);
+  const [comment, setComment] = useState('');
   const [savingComment, setSavingComment] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
 
   useEffect(() => {
-    setComment(gap.ownerComment);
+    setComment('');
     setCommentError(null);
-  }, [gap.id, gap.ownerComment]);
+  }, [gap.id]);
 
   useEffect(() => lockBodyScroll(), []);
 
@@ -99,7 +99,7 @@ export function GapDetailPanel({
   }, [closeOnEscape, onClose]);
 
   const isClosed = gap.status === 'resolved' || gap.status === 'dismissed';
-  const commentDirty = comment !== gap.ownerComment;
+  const commentDirty = comment.trim().length > 0;
 
   const handleSaveComment = async () => {
     if (!commentDirty || savingComment) return;
@@ -107,7 +107,8 @@ export function GapDetailPanel({
     setSavingComment(true);
     setCommentError(null);
     try {
-      await onSaveComment(gap, comment);
+      await onSaveComment(gap, comment.trim());
+      setComment('');
     } catch {
       setCommentError('Не удалось сохранить комментарий. Попробуйте ещё раз.');
     } finally {
@@ -276,13 +277,38 @@ export function GapDetailPanel({
           )}
 
           <PanelSection
-            title="Комментарий владельца БЗ"
+            title="Комментарии владельцев БЗ"
             action={
-              <span className="text-xs text-med-text-muted">
-                {commentDirty ? 'Не сохранён' : 'Сохранён'}
-              </span>
+              gap.comments.length > 0 ? (
+                <span className="text-xs text-med-text-muted">{gap.comments.length}</span>
+              ) : undefined
             }
           >
+            {gap.comments.length > 0 ? (
+              <ul className="space-y-2">
+                {gap.comments.map((item) => (
+                  <li
+                    key={item.id}
+                    className="rounded-lg border border-med-border bg-med-bg/40 p-2.5"
+                  >
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                      <span className="text-xs font-semibold text-med-text-primary">
+                        {item.author}
+                      </span>
+                      <time dateTime={item.createdAt} className="text-xs text-med-text-muted">
+                        {formatDateTime(item.createdAt)}
+                      </time>
+                    </div>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-5 text-med-text-secondary">
+                      {item.body}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-med-text-secondary">Комментариев пока нет.</p>
+            )}
+
             <textarea
               value={comment}
               onChange={(event) => setComment(event.target.value)}
@@ -301,7 +327,7 @@ export function GapDetailPanel({
                 className="inline-flex items-center gap-1.5 rounded-lg border border-med-border-strong bg-med-surface px-3 py-1.5 text-xs font-semibold text-med-primary transition-colors hover:bg-med-primary-light/40 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
-                {savingComment ? 'Сохраняем…' : 'Сохранить комментарий'}
+                {savingComment ? 'Сохраняем…' : 'Добавить комментарий'}
               </button>
             </div>
 

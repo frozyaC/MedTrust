@@ -36,7 +36,7 @@ import {
   toDateInputValue,
 } from '../lib/format';
 
-import { fetchKnowledgeGaps, updateGapStatus, saveGapComment } from '../api/knowledgeGaps';
+import { fetchKnowledgeGaps, updateGapStatus, addGapComment } from '../api/knowledgeGaps';
 
 type PageState = 'loading' | 'ready' | 'error';
 
@@ -381,12 +381,13 @@ export function KnowledgeGapsPage() {
     onSuccess?: () => void,
   ) => {
     const run = async () => {
-      await updateGapStatus(gap.id, status, options);
+      const savedComment = await updateGapStatus(gap.id, status, {
+        ...options,
+        author: DEMO_ADMIN_USER.name,
+      });
 
       const nowIso = new Date().toISOString();
       const isClosing = status === 'resolved' || status === 'dismissed';
-      const note = options?.note?.trim();
-
       setGaps((current) =>
         current.map((item) => {
           if (item.id !== gap.id) return item;
@@ -397,7 +398,7 @@ export function KnowledgeGapsPage() {
             ...(isClosing
               ? { resolvedAt: nowIso, resolvedBy: DEMO_ADMIN_USER.name }
               : {}),
-            ...(note ? { ownerComment: note } : {}),
+            ...(savedComment ? { comments: [...item.comments, savedComment] } : {}),
           };
         }),
       );
@@ -432,12 +433,13 @@ export function KnowledgeGapsPage() {
 
   const commitComment = async (gap: KnowledgeGap, comment: string) => {
     const run = async () => {
-      await saveGapComment(gap.id, comment);
-      const nowIso = new Date().toISOString();
+      const saved = await addGapComment(gap.id, comment, DEMO_ADMIN_USER.name);
 
       setGaps((current) =>
         current.map((item) =>
-          item.id === gap.id ? { ...item, ownerComment: comment, updatedAt: nowIso } : item,
+          item.id === gap.id
+            ? { ...item, comments: [...item.comments, saved], updatedAt: saved.createdAt }
+            : item,
         ),
       );
       setToast({ id: Date.now(), type: 'success', message: 'Комментарий сохранён' });
