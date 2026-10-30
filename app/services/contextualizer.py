@@ -466,6 +466,72 @@ class LLMContextualizer:
         return cls._clarification_for(question)
 
     @classmethod
+    def _ambiguous_number_result(
+        cls,
+        question: str,
+        depends_on_message_id: str | None,
+    ) -> ContextualizationResult | None:
+        """Ask which kind of number is meant before retrieval.
+
+        A bare "номер + person/entity" does not identify whether the user needs a
+        phone number, office number, or another identifier. Do not let the LLM
+        silently turn it into a phone-number query.
+        """
+        value = re.sub(r"\s+", " ", (question or "").strip().casefold().replace("ё", "е"))
+        if not re.search(r"\bномер(?:а|у|ом|е|ов|ам|ах)?\b", value):
+            return None
+
+        explicit_number_type = re.search(
+            r"\b(?:телефон\w*|контакт\w*|кабинет\w*|комнат\w*|внутренн\w*|"
+            r"полис\w*|талон\w*|направлен\w*|карт\w*|документ\w*|"
+            r"договор\w*|заказ\w*|заявк\w*|чек\w*|регистрац\w*|"
+            r"истори\w*|протокол\w*|счет\w*|счёт\w*)\b",
+            value,
+        )
+        if explicit_number_type:
+            return None
+
+        subject_text = re.sub(
+            r"\b(?:подскажите|скажите|мне|нужен|нужна|нужно|какой|какая|какое|какие|"
+            r"покажите|найти|номер(?:а|у|ом|е|ов|ам|ах)?|у|для|врача|доктора|"
+            r"специалиста|сотрудника)\b",
+            " ",
+            question,
+            flags=re.IGNORECASE,
+        )
+        subject = re.sub(r"\s+", " ", subject_text).strip(" ?!.;,:")
+        subject = subject[:_MAX_ENTITY_VALUE_CHARS] or None
+
+        if subject:
+            clarification = (
+                f"Уточните, пожалуйста, что именно вы ищете для {subject}: "
+                "телефон или номер кабинета?"
+            )
+            entities: dict[str, Any] = {
+                "subject": subject,
+                "requested_attribute": "number",
+            }
+        else:
+            clarification = (
+                "Уточните, пожалуйста, что именно вы ищете: телефон, "
+                "номер кабинета или другой идентификатор?"
+            )
+            entities = {"requested_attribute": "number"}
+
+        return ContextualizationResult(
+            intent="ambiguous",
+            resolved_query=None,
+            entities=entities,
+            corrections=[],
+            confidence=0.99,
+            clarification_required=True,
+            clarification_question=clarification,
+            depends_on_message_id=depends_on_message_id,
+            llm_attempted=False,
+            status="clarification_required_ambiguous_number",
+        )
+
+    @classmethod
     def _deterministic_fragment_result(
         cls,
         question: str,
@@ -479,6 +545,10 @@ class LLMContextualizer:
         production showed it sometimes returned the raw fragment or picked one of two
         tests without sufficient evidence.
         """
+        ambiguous_number = cls._ambiguous_number_result(question, depends_on_message_id)
+        if ambiguous_number is not None:
+            return ambiguous_number
+
         pending_question = str(state.get("pending_question") or "").strip()
         is_brief_entity_reply = (
             bool(question)
