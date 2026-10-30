@@ -1,2 +1,5 @@
 .env
 check.ipynb
+
+__pycache__
+.vscode

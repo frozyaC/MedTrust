@@ -46,7 +46,30 @@ _ENSURE_SQL = (
     "ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'automatic'",
     "ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     "ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ NULL",
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_gap_comments (
+        id BIGSERIAL PRIMARY KEY,
+        gap_id BIGINT NOT NULL REFERENCES knowledge_gaps(id) ON DELETE CASCADE,
+        author TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS knowledge_gap_comments_gap_idx ON knowledge_gap_comments (gap_id, created_at)",
+    # Отзывы пишет /feedback; таблица может ещё не существовать, если отзывов не было
+    """
+    CREATE TABLE IF NOT EXISTS query_feedback (
+        id UUID PRIMARY KEY,
+        query_id UUID NOT NULL,
+        rating TEXT NOT NULL CHECK (rating IN ('positive', 'negative')),
+        comment TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
 )
+
+# save_feedback хранит комментарий как "[reason_code] текст"
+_FEEDBACK_COMMENT_RE = re.compile(r"^\[([a-z_]+)\]\s*(.*)$", re.DOTALL)
 
 GAP_STATUSES = {"open", "in_review", "resolved", "dismissed"}
 # Причины, создающие пробел; совпадает с createsGap в frontend/src/data/feedbackReasons.ts
@@ -61,6 +84,41 @@ def _ensure_schema(cur: Any) -> None:
 def _reason_code(reason: str) -> str:
     code = (reason or "").removeprefix("user_feedback:")
     return code if code in GAP_REASON_CODES else "no_knowledge_base_answer"
+
+
+def _feedback_view(feedback_id: Any, rating: str, raw_comment: str | None) -> dict[str, Any]:
+    comment = raw_comment or ""
+    reason_code = None
+    match = _FEEDBACK_COMMENT_RE.match(comment)
+    if match:
+        reason_code, comment = match.group(1), match.group(2)
+    return {
+        "id": str(feedback_id),
+        "rating": rating,
+        "comment": comment.strip(),
+        **({"reasonCode": reason_code} if reason_code in GAP_REASON_CODES else {}),
+    }
+
+
+def _comment_view(row: tuple) -> dict[str, Any]:
+    return {
+        "id": str(row[0]),
+        "author": row[1],
+        "body": row[2],
+        "createdAt": row[3].isoformat(),
+    }
+
+
+def _insert_comment(cur: Any, gap_id: int, author: str, body: str) -> dict[str, Any]:
+    cur.execute(
+        """
+        INSERT INTO knowledge_gap_comments (gap_id, author, body)
+        VALUES (%s, %s, %s)
+        RETURNING id, author, body, created_at
+        """,
+        (gap_id, author[:200], body[:2000]),
+    )
+    return _comment_view(cur.fetchone())
 
 
 class KnowledgeGapTracker:
@@ -146,15 +204,36 @@ class KnowledgeGapTracker:
                 _ensure_schema(cur)
                 cur.execute(
                     """
-                    SELECT id, sample_query, normalized_query, reason, status, source,
-                           first_seen_at, updated_at, resolved_at,
-                           last_conversation_id, last_query_id, wiki_candidates
-                    FROM knowledge_gaps
-                    ORDER BY first_seen_at DESC
+                    SELECT g.id, g.sample_query, g.normalized_query, g.reason, g.status, g.source,
+                           g.first_seen_at, g.updated_at, g.resolved_at,
+                           g.last_conversation_id, g.last_query_id, g.wiki_candidates,
+                           f.id, f.rating, f.comment
+                    FROM knowledge_gaps g
+                    LEFT JOIN LATERAL (
+                        SELECT id, rating, comment
+                        FROM query_feedback
+                        WHERE query_id = g.last_query_id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    ) f ON TRUE
+                    ORDER BY g.first_seen_at DESC
                     LIMIT 1000
                     """
                 )
                 rows = cur.fetchall()
+                comments: dict[int, list[dict[str, Any]]] = {}
+                if rows:
+                    cur.execute(
+                        """
+                        SELECT id, author, body, created_at, gap_id
+                        FROM knowledge_gap_comments
+                        WHERE gap_id = ANY(%s)
+                        ORDER BY created_at, id
+                        """,
+                        ([r[0] for r in rows],),
+                    )
+                    for c in cur.fetchall():
+                        comments.setdefault(c[4], []).append(_comment_view(c))
         gaps = []
         for r in rows:
             candidates = r[11] if isinstance(r[11], list) else []
@@ -173,7 +252,8 @@ class KnowledgeGapTracker:
                     {"id": c.get("path") or str(i), "title": c.get("title") or c.get("path") or ""}
                     for i, c in enumerate(candidates)
                 ],
-                "ownerComment": "",
+                **({"feedback": _feedback_view(r[12], r[13], r[14])} if r[12] else {}),
+                "comments": comments.get(r[0], []),
                 "webSearchUsed": False,
                 "createdAt": r[6].isoformat(),
                 "updatedAt": r[7].isoformat(),
@@ -181,9 +261,12 @@ class KnowledgeGapTracker:
             })
         return gaps
 
-    def update_status(self, gap_id: int, status: str) -> bool:
+    def update_status(
+        self, gap_id: int, status: str, note: str | None = None, author: str | None = None
+    ) -> dict[str, Any] | None:
+        """Change the status; a non-empty note is stored as a comment. Returns None if not found."""
         if status not in GAP_STATUSES or not self.database_url:
-            return False
+            return None
         import psycopg
 
         with psycopg.connect(self.database_url, connect_timeout=3) as conn:
@@ -198,4 +281,22 @@ class KnowledgeGapTracker:
                     """,
                     (status, status, gap_id),
                 )
-                return cur.rowcount > 0
+                if cur.rowcount == 0:
+                    return None
+                note = (note or "").strip()
+                comment = _insert_comment(cur, gap_id, author or "Неизвестный автор", note) if note else None
+                return {"status": status, **({"comment": comment} if comment else {})}
+
+    def add_comment(self, gap_id: int, author: str, body: str) -> dict[str, Any] | None:
+        """Append an owner comment to the gap. Returns None if the gap does not exist."""
+        if not self.database_url:
+            return None
+        import psycopg
+
+        with psycopg.connect(self.database_url, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                _ensure_schema(cur)
+                cur.execute("UPDATE knowledge_gaps SET updated_at = NOW() WHERE id = %s", (gap_id,))
+                if cur.rowcount == 0:
+                    return None
+                return _insert_comment(cur, gap_id, author, body)
