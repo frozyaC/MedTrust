@@ -79,6 +79,8 @@ _SERVICE_PATTERNS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
 )
 
 _FACET_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cabinet", (r"кабинет\w*", r"номер\s+кабинет\w*", r"room\s*\w*")),
+    ("phone", (r"телефон\w*", r"контакт\w*", r"номер\s+телефон\w*", r"phone\w*")),
     ("price", (r"стоимост\w*", r"цен\w*", r"сколько(?:\s+стоит)?")),
     ("preparation", (r"подготов\w*", r"как подготовиться")),
     ("timing", (r"срок\w*", r"когда", r"длительност\w*")),
@@ -157,21 +159,23 @@ class LLMContextualizer:
     """Resolve follow-up questions using a bounded conversation history."""
 
     _FRAGMENT_RE = re.compile(
-        r"^(?:а\s+)?(?:стоимость|цена|цену|цене|подготовка|подготовке|срок|сроки|"
+        r"^(?:а\s+)?(?:телефон\w*|контакт\w*|номер(?:\s+телефон\w*)?|"
+        r"номер\s+кабинет\w*|кабинет\w*|стоимость|цена|цену|цене|подготовка|подготовке|срок|сроки|"
         r"адрес|расположение|где|когда|состав|противопоказания|ограничения|"
         r"перечень|список|сколько(?:\s+стоит)?|что\s+по\s+цене|и\s+сколько)\s*[?.!,]*$",
         re.IGNORECASE,
     )
 
     _ATTRIBUTE_PREFIXES = (
-        "стоимость", "цена", "цену", "подготовка", "подготовке", "срок", "сроки",
-        "адрес", "расположение", "где", "когда", "состав", "противопоказания",
-        "ограничения", "перечень", "список", "сколько",
+        "телефон", "контакт", "номер", "кабинет", "стоимость", "цена", "цену",
+        "подготовка", "подготовке", "срок", "сроки", "адрес", "расположение",
+        "где", "когда", "состав", "противопоказания", "ограничения", "перечень",
+        "список", "сколько",
     )
 
     _ENTITY_KEYS = (
-        "service", "analysis", "laboratory_test", "procedure", "doctor", "specialist",
-        "appointment_type", "clinic", "test",
+        "subject", "doctor", "specialist", "service", "analysis", "laboratory_test",
+        "procedure", "appointment_type", "clinic", "test",
     )
 
     def __init__(self, gigachat: GigaChatClient) -> None:
@@ -320,6 +324,13 @@ class LLMContextualizer:
             return "Уточните, пожалуйста, к какой услуге или процедуре нужна подготовка?"
         if re.search(r"срок|когда", cleaned):
             return "Уточните, пожалуйста, сроки какой услуги или исследования вас интересуют?"
+        if re.search(r"кабинет", cleaned):
+            return "Уточните, пожалуйста, кабинет какого специалиста или врача нужно найти?"
+        if re.search(r"телефон|контакт|номер", cleaned):
+            return (
+                "Уточните, пожалуйста, телефон или контакты какого специалиста "
+                "либо подразделения вас интересуют?"
+            )
         if re.search(r"адрес|располож|где", cleaned):
             return "Уточните, пожалуйста, адрес какого филиала или кабинета нужно найти?"
         if re.search(r"состав", cleaned):
@@ -349,6 +360,77 @@ class LLMContextualizer:
             if any(re.search(pattern, value) for pattern in patterns):
                 return facet
         return None
+
+    @classmethod
+    def _pending_subject(cls, state: dict[str, Any]) -> str | None:
+        """Recover the object of a pending clarification without trusting a one-word reply."""
+        pending_question = str(state.get("pending_question") or "").strip()
+        pending_prompt = str(state.get("pending_clarification_question") or "").strip()
+        # Prefer the original wording: it preserves the exact inflected form of a proper
+        # name (e.g. "Гараевой") rather than a model-normalized nominative form.
+        subject_patterns = (
+            r"\b(?:кабинет\w*|врач\w*|доктор\w*|специалист\w*|телефон\w*|номер\w*)"
+            r"\s+(?:врача\s+)?(?P<subject>[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){0,2})",
+            r"\bу\s+(?P<subject>[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){0,2})",
+        )
+        for source_text in (pending_question, pending_prompt):
+            for pattern in subject_patterns:
+                match = re.search(pattern, source_text)
+                if match:
+                    return match.group("subject").strip()[:_MAX_ENTITY_VALUE_CHARS]
+
+        preferred_keys = (
+            "subject", "doctor", "specialist", "physician", "person", "employee",
+            "staff_member", "clinic", "department", "service", "procedure",
+            "appointment_type", "analysis", "laboratory_test", "test",
+        )
+        for source_key in ("pending_entities", "entities"):
+            entities = state.get(source_key)
+            if not isinstance(entities, dict):
+                continue
+            for key in preferred_keys:
+                value = entities.get(key)
+                if isinstance(value, str) and value.strip():
+                    cleaned = re.sub(
+                        r"^(?:врач|доктор|специалист|кабинет|клиника)\s+",
+                        "", value.strip(), flags=re.IGNORECASE,
+                    )
+                    return cleaned[:_MAX_ENTITY_VALUE_CHARS]
+
+        pending_topic = state.get("pending_active_topic")
+        if isinstance(pending_topic, str) and pending_topic.strip():
+            return pending_topic.strip()[:_MAX_ENTITY_VALUE_CHARS]
+        return None
+
+    @classmethod
+    def _query_from_pending_selection(
+        cls, facet: str, state: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Turn a short option such as 'телефон'/'кабинет' into a complete retrieval query."""
+        labels = {"phone": "Телефон", "cabinet": "Кабинет"}
+        label = labels.get(facet)
+        if not label:
+            return None
+
+        subject = cls._pending_subject(state)
+        pending_question = str(state.get("pending_question") or "").strip()
+        if subject:
+            resolved_query = f"{label} {subject}"
+        elif pending_question:
+            # Even without a structured person/service entity, retain the complete
+            # unresolved question instead of sending the selected noun to retrieval.
+            resolved_query = f"{label}: {pending_question.rstrip(' ?!.')}"
+        else:
+            return None
+
+        entities = state.get("pending_entities")
+        if not isinstance(entities, dict) or not entities:
+            entities = state.get("entities")
+        preserved_entities = dict(entities) if isinstance(entities, dict) else {}
+        preserved_entities["requested_attribute"] = facet
+        if subject:
+            preserved_entities.setdefault("subject", subject)
+        return resolved_query[:_MAX_RESOLVED_QUERY_CHARS], preserved_entities
 
     @staticmethod
     def _facet_label(facet: str, service: dict[str, str]) -> str:
@@ -409,6 +491,20 @@ class LLMContextualizer:
             )
         )
         if pending_question and is_brief_entity_reply:
+            selected_facet = cls._facet_key(question)
+            if selected_facet in {"phone", "cabinet"}:
+                selected = cls._query_from_pending_selection(selected_facet, state)
+                if selected is not None:
+                    resolved_query, entities = selected
+                    return ContextualizationResult(
+                        intent="follow_up",
+                        resolved_query=resolved_query,
+                        entities=entities,
+                        corrections=[], confidence=0.99, clarification_required=False,
+                        clarification_question=None, depends_on_message_id=depends_on_message_id,
+                        llm_attempted=False, status="resolved_from_clarification_selection",
+                    )
+
             answered_services = cls._candidate_services(question)
             pending_facet = cls._facet_key(pending_question)
             if len(answered_services) == 1 and pending_facet:
@@ -530,7 +626,12 @@ class LLMContextualizer:
                 }
             )
         if latest and bool(latest[4]):
+            pending_entities = self._decode_json(latest[2], {})
             state["pending_question"] = str(latest[0] or "")
+            state["pending_entities"] = (
+                pending_entities if isinstance(pending_entities, dict) else {}
+            )
+            state["pending_active_topic"] = str(latest[3] or "") or None
             state["pending_clarification_question"] = str(latest[5] or "")
             state["pending_intent"] = str(latest[6] or "ambiguous")
         return state
@@ -783,7 +884,10 @@ class LLMContextualizer:
         )
         if deterministic is not None and (
             deterministic.clarification_required
-            or deterministic.status == "resolved_from_clarification_reply"
+            or deterministic.status in {
+                "resolved_from_clarification_reply",
+                "resolved_from_clarification_selection",
+            }
         ):
             result = deterministic
         else:
