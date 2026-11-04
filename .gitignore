@@ -1,5 +1,5 @@
 .env
 check.ipynb
-
+reports/
 __pycache__
 .vscode

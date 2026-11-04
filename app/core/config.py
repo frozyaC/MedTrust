@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # Per-request RAG context budget to avoid large prompt and output token usage.
     rag_max_web_sources: int = 2
-    rag_max_wiki_sources: int = 3
+    rag_max_wiki_sources: int = 5
     rag_max_source_chars: int = 4200
     rag_max_history_messages: int = 4
     rag_max_history_message_chars: int = 600
