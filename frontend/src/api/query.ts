@@ -1,4 +1,4 @@
-import { AnswerData, ConversationItem, Patient, Source } from '../types';
+import { AnswerData, ConversationItem, Patient, Source, WebSearchData } from '../types';
 
 export class QueryApiError extends Error {
   constructor(
@@ -35,6 +35,7 @@ interface SourceEvidenceCheck {
 }
 
 interface AnswerReviewDiagnostics {
+  status?: string;
   source_evidence_check?: SourceEvidenceCheck;
   used_source_ids?: string[];
 }
@@ -56,7 +57,7 @@ interface StoredChatMessage {
   created_at: string;
 }
 
-const NO_ANSWER_TEXT = 'не найден подтверждающий источник';
+// const NO_ANSWER_TEXT = 'не найден подтверждающий источник';
 const TIME_FORMAT: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
 
 function apiBaseUrl(): string {
@@ -156,15 +157,27 @@ export function mapQueryResponse(
     sources,
     wikiStrongMatch,
     usedSourceIds,
+    noAnswer: isNoAnswer(data),
   };
 }
 
 export function isNoAnswer(data: QueryResponse): boolean {
   const answerText = (data.answer ?? '').trim();
-
   if (!answerText) return true;
 
-  if (answerText.toLowerCase().includes(NO_ANSWER_TEXT)) return true;
+  const normalized = answerText.toLowerCase().replace(/[.!…\s]+/g, ' ').trim();
+  if (normalized === 'данных может быть недостаточно') return true;
+  if (normalized === 'нужные данные не найдены') return true;
+  if (answerText.toLowerCase().includes('не найден подтверждающий источник')) return true;
+
+  const status = data.answer_review_diagnostics?.status;
+  const sources = Array.isArray(data.sources) ? data.sources : [];
+  if (
+    sources.length === 0 &&
+    (status === 'insufficient_evidence' || status === 'unverified_fallback')
+  ) {
+    return true;
+  }
 
   return false;
 }
@@ -223,6 +236,8 @@ export async function askAndBuildItem(
         answer: noAnswer ? undefined : answer,
         sourcesExpanded: false,
         feedback: null,
+        // query_id сохраняем всегда — нужен для «Отметить как пробел» и feedback
+        queryId: data.query_id,
       },
       conversationId: data.conversation_id,
     };
@@ -268,6 +283,7 @@ function itemFromPair(user: StoredChatMessage, assistant: StoredChatMessage): Co
     answer: noAnswer ? undefined : mapQueryResponse(user.content, data, timestamp),
     sourcesExpanded: false,
     feedback: null,
+    queryId: data.query_id,
   };
 }
 
@@ -345,6 +361,40 @@ export async function cancelGap(gapId: string | number, note?: string): Promise<
     }
     throw new QueryApiError(detail, response.status);
   }
+}
+
+/**
+ * Ручной веб-поиск: POST /api/v1/web-search.
+ */
+export async function askWebSearch(
+  question: string,
+  limit = 5,
+): Promise<WebSearchData> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl()}/api/v1/web-search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, limit }),
+    });
+  } catch {
+    throw new QueryApiError('Не удалось подключиться к сервису веб-поиска');
+  }
+
+  if (!response.ok) {
+    let detail = `Ошибка веб-поиска: ${response.status}`;
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === 'string') {
+        detail = payload.detail;
+      }
+    } catch {
+      // keep status message
+    }
+    throw new QueryApiError(detail, response.status);
+  }
+
+  return (await response.json()) as WebSearchData;
 }
 
 export async function loadConversationItems(conversationId: string): Promise<ConversationItem[]> {

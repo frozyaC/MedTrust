@@ -50,6 +50,9 @@ export interface AnswerData {
 
   /** Признак, что ответ получен из веб-поиска (не из БЗ) */
   webSearchUsed?: boolean;
+
+  /** Фронтовый флаг: бэк не нашёл ответа в локальной Wiki (no-answer) */
+  noAnswer?: boolean;
 }
 
 /** Оценка ответа регистратором */
@@ -72,6 +75,11 @@ export interface ConversationItem {
   answer?: AnswerData;
   sourcesExpanded: boolean;
   feedback: FeedbackRating | null;
+  webSearchState?: 'idle' | 'loading' | 'success' | 'error';
+  webAnswer?: WebSearchData;
+  webError?: string;
+  /** query_id из бэка; сохраняется даже при no_answer, чтобы можно было отправить feedback */
+  queryId?: string;
 }
 
 /** Демо-состояния экрана (переключаются через StateSelector) */
@@ -89,4 +97,24 @@ export type ScreenState =
 export interface FeedbackResponse {
   status: string;
   gap_recorded: boolean;
+}
+
+/** Один источник из POST /api/v1/web-search */
+export interface WebSearchSource {
+  source_id: string;
+  title: string;
+  url: string;
+  domain: string;
+  relevance: 'relevant' | 'low' | string;
+  evidence_status: 'supported_candidate' | 'unverified' | string;
+  content_type: 'page' | 'search_snippet' | string;
+}
+
+/** Ответ POST /api/v1/web-search (ручной веб-поиск) */
+export interface WebSearchData {
+  status: 'success' | 'disabled' | 'api_error' | 'no_results' | string;
+  answer: string;
+  sources: WebSearchSource[];
+  warning?: string;
+  diagnostics?: Record<string, unknown>;
 }

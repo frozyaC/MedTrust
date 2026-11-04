@@ -15,6 +15,7 @@ import { SuggestionRow } from './components/SuggestionRow';
 import { ChatComposer } from './components/ChatComposer';
 import { AnswerSkeleton } from './components/AnswerSkeleton';
 import { MessageThread } from './components/MessageThread';
+import { WebAnswerBlock } from './components/WebAnswerBlock';
 import { MOCK_PATIENTS, MOCK_ANSWERS } from './data/mockData';
 import { FeedbackReasonCode, getFeedbackReason } from './data/feedbackReasons';
 import {
@@ -24,7 +25,7 @@ import {
   Patient,
   ScreenState,
 } from './types';
-import { QueryApiError, askAndBuildItem, cancelGap, loadConversationItems, sendFeedback } from './api/query';
+import { QueryApiError, askAndBuildItem, askWebSearch, cancelGap, loadConversationItems, sendFeedback } from './api/query';
 import {
   AlertOctagon,
   FileQuestion,
@@ -491,6 +492,96 @@ export default function App() {
     setToastMessage('Пробел отменён. Запись осталась в истории админки.');
   };
 
+  /**
+   * Ручной веб-поиск по вопросу, на который не нашлось ответа в Wiki.
+   */
+  const handleWebSearch = async (itemId: string, question: string): Promise<void> => {
+    // Локально помечаем, что идёт загрузка
+    setCurrentThread((items) =>
+      items.map((candidate) =>
+        candidate.id === itemId
+          ? {
+              ...candidate,
+              webSearchState: 'loading',
+              webError: undefined,
+            }
+          : candidate,
+      ),
+    );
+
+    try {
+      const data = await askWebSearch(question, 5);
+      setCurrentThread((items) =>
+        items.map((candidate) =>
+          candidate.id === itemId
+            ? {
+                ...candidate,
+                webSearchState: 'success',
+                webAnswer: data,
+              }
+            : candidate,
+        ),
+      );
+    } catch (error) {
+      const detail =
+        error instanceof QueryApiError ? error.message : 'Неизвестная ошибка';
+      setCurrentThread((items) =>
+        items.map((candidate) =>
+          candidate.id === itemId
+            ? {
+                ...candidate,
+                webSearchState: 'error',
+                webError: detail,
+              }
+            : candidate,
+        ),
+      );
+      setToastMessage(`Веб-поиск не удался: ${detail}`);
+    }
+  };
+
+  /**
+   * «Отметить как пробел» в no-answer блоке.
+   */
+  const handleMarkAsGap = async (
+    itemId: string,
+    question: string,
+    queryId?: string,
+  ): Promise<void> => {
+    // Локально сразу показываем «отмечено» — не блокируем UI ожиданием бэка
+    setCurrentThread((items) =>
+      items.map((candidate) =>
+        candidate.id === itemId
+          ? { ...candidate, feedback: 'useless' }
+          : candidate,
+      ),
+    );
+
+    if (!queryId) {
+      setToastMessage('Вопрос отмечен как пробел локально (ID запроса недоступен).');
+      return;
+    }
+
+    try {
+      const result = await sendFeedback({
+        queryId,
+        rating: 'negative',
+        reasonCode: 'no_knowledge_base_answer',
+        question,
+        conversationId: conversationIds[threadKey],
+      });
+
+      if (result.gap_recorded) {
+        setToastMessage('Пробел в БЗ зафиксирован: «Нет ответа в базе знаний».');
+      } else {
+        setToastMessage('Спасибо! Отзыв сохранён.');
+      }
+    } catch (error) {
+      const detail = error instanceof QueryApiError ? error.message : 'Неизвестная ошибка';
+      setToastMessage(`Не удалось отправить отзыв: ${detail}. Отметка сохранена локально.`);
+    }
+  };
+
   const clearConversation = () => {
     setThreads((current) => ({ ...current, [threadKey]: [] }));
     dropConversationIds(threadKey, UNASSIGNED_THREAD);
@@ -701,28 +792,30 @@ export default function App() {
                           }
                           onCancelGap={handleCancelGap}
                         />
-                        <SourceGroup
-                          answer={item.answer}
-                          answerId={item.id}
-                          expanded={item.sourcesExpanded}
-                          highlightedId={
-                            highlightedSource?.answerId === item.id
-                              ? highlightedSource.sourceId
-                              : null
-                          }
-                          onToggle={() =>
-                            setCurrentThread((items) =>
-                              items.map((candidate) =>
-                                candidate.id === item.id
-                                  ? {
-                                      ...candidate,
-                                      sourcesExpanded: !candidate.sourcesExpanded,
-                                    }
-                                  : candidate,
-                              ),
-                            )
-                          }
-                        />
+                        {item.answer.sources.length > 0 && (
+                          <SourceGroup
+                            answer={item.answer}
+                            answerId={item.id}
+                            expanded={item.sourcesExpanded}
+                            highlightedId={
+                              highlightedSource?.answerId === item.id
+                                ? highlightedSource.sourceId
+                                : null
+                            }
+                            onToggle={() =>
+                              setCurrentThread((items) =>
+                                items.map((candidate) =>
+                                  candidate.id === item.id
+                                    ? {
+                                        ...candidate,
+                                        sourcesExpanded: !candidate.sourcesExpanded,
+                                      }
+                                    : candidate,
+                                ),
+                              )
+                            }
+                          />
+                        )}
                         {item.feedback ? (
                           <span className="inline-flex px-3 py-1.5 bg-white border border-[#BFDBFE] rounded-full text-xs text-[#475569]">
                             Оценка:{' '}
@@ -739,27 +832,66 @@ export default function App() {
                     )}
 
                   {item.status === 'no_answer' && (
-                    <div className="bg-white rounded-xl border border-[#BFDBFE] p-8 shadow-xs text-center max-w-[800px] space-y-4">
-                      <div className="w-12 h-12 rounded-full bg-amber-100 text-[#F59E0B] flex items-center justify-center mx-auto">
-                        <FileQuestion className="w-6 h-6" />
+                    <>
+                      <div className="bg-white rounded-xl border border-[#BFDBFE] p-8 shadow-xs text-center max-w-[800px] space-y-4">
+                        <div className="w-12 h-12 rounded-full bg-amber-100 text-[#F59E0B] flex items-center justify-center mx-auto">
+                          <FileQuestion className="w-6 h-6" />
+                        </div>
+                        <div className="space-y-1">
+                          <h3 className="font-semibold text-base text-[#0F172A]">
+                            В базе знаний нет точного ответа
+                          </h3>
+                          <p className="text-xs text-[#475569] max-w-[520px] mx-auto">
+                            В базе знаний MedTrust нет точного ответа на этот вопрос.
+                          </p>
+                          <p className="text-xs text-[#475569] max-w-[520px] mx-auto">
+                            Если необходимо отправте запрос заведующему регистратурой.
+                          </p>
+                          <p className="text-xs text-[#475569] max-w-[520px] mx-auto pt-1.5 font-medium text-[#0F172A]">
+                            Желаете выполнить поиск информации в интернете?
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleWebSearch(item.id, item.question)}
+                            disabled={
+                              item.webSearchState === 'loading' ||
+                              item.webSearchState === 'success'
+                            }
+                            className="px-4 py-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-semibold rounded-lg transition-colors shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {item.webSearchState === 'loading'
+                              ? 'Ищем в интернете…'
+                              : 'Найти в интернете'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleMarkAsGap(item.id, item.question, item.queryId)
+                            }
+                            disabled={
+                              item.feedback === 'useless' ||
+                              item.feedback === 'useful'
+                            }
+                            className="px-4 py-2 bg-white border border-[#BFDBFE] hover:bg-[#EFF6FF] text-[#2563EB] text-xs font-semibold rounded-lg transition-colors shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {item.feedback === 'useless' || item.feedback === 'useful'
+                              ? 'Отмечено'
+                              : 'Отметить как пробел'}
+                          </button>
+                        </div>
+                        {item.webSearchState === 'error' && item.webError && (
+                          <p className="text-xs text-[#EF4444]">
+                            Не удалось выполнить веб-поиск: {item.webError}
+                          </p>
+                        )}
                       </div>
-                      <div className="space-y-1">
-                        <h3 className="font-semibold text-base text-[#0F172A]">
-                          В базе знаний нет точного ответа
-                        </h3>
-                        <p className="text-xs text-[#475569]">
-                          Мы отправили запрос заведующему регистратурой.
-                        </p>
-                      </div>
-                      <button
-                        onClick={() =>
-                          setToastMessage('Вопрос отмечен как пробел в базе знаний.')
-                        }
-                        className="px-4 py-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-semibold rounded-lg transition-colors shadow-xs"
-                      >
-                        Отметить как пробел
-                      </button>
-                    </div>
+
+                      {item.webSearchState === 'success' && item.webAnswer && (
+                        <WebAnswerBlock data={item.webAnswer} />
+                      )}
+                    </>
                   )}
 
                   {item.status === 'error' && (
