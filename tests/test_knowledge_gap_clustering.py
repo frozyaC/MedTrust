@@ -6,6 +6,7 @@ from app.services.knowledge_gap_tracker import (
     KnowledgeGapTracker,
     _fingerprint,
     _normalise,
+    _privacy_safe_query,
     _similarity_action,
     _updated_centroid,
 )
@@ -26,8 +27,8 @@ def test_normalization_handles_yo_case_and_punctuation():
 @pytest.mark.parametrize(
     ("similarity", "expected"),
     [
-        (0.95, "merge"),
-        (0.90, "merge"),
+        (0.95, "review"),
+        (0.90, "review"),
         (0.8999, "review"),
         (0.80, "review"),
         (0.7999, "new"),
@@ -88,7 +89,7 @@ def test_evidence_is_compact_and_ignores_non_dict_values():
     }]
 
 
-def test_high_confidence_match_updates_existing_centroid(monkeypatch):
+def test_high_confidence_match_creates_review_candidate_without_auto_merge(monkeypatch):
     import sys
     from unittest.mock import Mock
 
@@ -116,12 +117,13 @@ def test_high_confidence_match_updates_existing_centroid(monkeypatch):
         embedding=[0.0, 1.0],
     )
 
-    assert assigned == cluster_id
-    assert suggested is None
+    assert assigned is not None
+    assert assigned != cluster_id
+    assert suggested == cluster_id
     assert score == 0.95
-    assert match_type == "semantic"
-    update = cursor.execute.call_args
-    assert update.args[1] == ([0.8, 0.2], 1, None, None, cluster_id)
+    assert match_type == "review_candidate"
+    assert "INSERT INTO knowledge_gap_clusters" in cursor.execute.call_args.args[0]
+    assert not any("UPDATE knowledge_gap_clusters" in str(call.args[0]) for call in cursor.execute.call_args_list)
 
 
 def test_borderline_match_creates_review_candidate_instead_of_auto_merge(monkeypatch):
@@ -232,3 +234,15 @@ def test_list_clusters_reports_lifecycle_statuses_separately(monkeypatch):
     assert cluster["unresolvedQuestions"] == 2
     assert cluster["suggestedMergeCount"] == 1
     assert [member["status"] for member in cluster["members"]] == ["in_review", "open"]
+
+
+def test_phi_like_identifiers_are_redacted_before_embedding_and_gap_indexing():
+    safe = _privacy_safe_query(
+        "Пациент Иванов Иван Иванович, дата рождения 01.02.1980, "
+        "телефон +7 999 123-45-67, почта test@example.org: подготовка к гастроскопии"
+    )
+    assert "Иванов" not in safe
+    assert "01.02.1980" not in safe
+    assert "+7 999 123-45-67" not in safe
+    assert "test@example.org" not in safe
+    assert "подготовка к гастроскопии" in safe

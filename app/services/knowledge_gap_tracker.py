@@ -1,9 +1,8 @@
-"""Persist exact and semantically grouped MedTrust knowledge gaps.
+"""Persist MedTrust knowledge-gap topics without auto-merging semantic matches.
 
-Exact duplicates continue to use a SHA-256 fingerprint. Distinct questions are
-embedded and assigned to a semantic cluster only when cosine similarity reaches
-the configured automatic-merge threshold. Borderline matches are stored as
-review suggestions instead of being merged automatically.
+Exact duplicate questions continue to use a SHA-256 fingerprint. Distinct
+questions always retain separate gap and cluster identities; vector similarity
+is only a suggestion signal. Owner-confirmed groups are managed separately.
 """
 from __future__ import annotations
 
@@ -32,6 +31,28 @@ def _database_url() -> str | None:
     return os.getenv("DATABASE_URL") or os.getenv("DATABASE_DSN")
 
 
+def _privacy_safe_query(value: str) -> str:
+    """Remove common direct identifiers before embedding or gap-table storage.
+
+    The original registrar question remains in conversation_query_context; the
+    semantic index only receives a de-identified topic string.
+    """
+    text = (value or "")[:4000]
+    patterns = (
+        (r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[email]"),
+        (r"\b\d{3}-\d{3}-\d{3}\s?\d{2}\b", "[identifier]"),
+        (r"\b\d{4}\s?\d{6}\b", "[document]"),
+        (r"\b(?:дата\s+рождения|родил(?:ся|ась)|д\.?р\.?)[^,;.!?]{0,30}\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", "[date_of_birth]"),
+        (r"\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}\b", "[date]"),
+        (r"(?i)\b(?:пациент(?:ка)?|больной|больная)\s+[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2}", "пациент [ФИО]"),
+        (r"(?i)\bфио\s*[:：]\s*[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2}", "ФИО: [скрыто]"),
+        (r"(?<!\d)(?:\+?\d[\s().-]*){10,15}(?!\d)", "[phone]"),
+    )
+    for pattern, replacement in patterns:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
 def _normalise(value: str) -> str:
     value = (value or "").casefold().replace("ё", "е")
     value = re.sub(r"[^a-zа-я0-9]+", " ", value)
@@ -48,9 +69,7 @@ def _similarity_action(
     auto_threshold: float = 0.90,
     review_threshold: float = 0.80,
 ) -> str:
-    """Return 'merge', 'review', or 'new' for a cosine similarity value."""
-    if similarity >= auto_threshold:
-        return "merge"
+    """Return a review suggestion for similar questions; never merge by vectors."""
     if similarity >= review_threshold:
         return "review"
     return "new"
@@ -253,38 +272,25 @@ class KnowledgeGapTracker:
         first_seen_at: Any | None = None,
         last_seen_at: Any | None = None,
     ) -> tuple[uuid.UUID | None, uuid.UUID | None, float | None, str]:
-        """Assign a query to a cluster or create a review suggestion/new cluster."""
+        """Create a distinct cluster row and store a suggestion, never auto-merge.
+
+        Exact duplicates are still deduplicated by the SHA-256 fingerprint before
+        this method is called. Semantic similarity is only a proposal signal; an
+        owner-confirmed group is managed separately by GapMapService.
+        """
         if embedding is None:
             return None, None, None, "unassigned"
 
         from pgvector import Vector
+
         nearest = self._find_cluster(cur, embedding)
-
-        auto_threshold, review_threshold = self._thresholds()
+        _, review_threshold = self._thresholds()
         similarity = nearest["similarity"] if nearest else None
-        action = _similarity_action(
-            similarity if similarity is not None else -1.0,
-            auto_threshold=auto_threshold,
-            review_threshold=review_threshold,
-        )
-
-        if action == "merge" and nearest and embedding is not None:
-            cluster_id = nearest["id"]
-            old_count = nearest["occurrence_count"]
-            centroid = _updated_centroid(
-                nearest["embedding"], embedding, old_count, existing_occurrences
-            )
-            cur.execute(
-                """
-                UPDATE knowledge_gap_clusters
-                SET embedding=%s, occurrence_count=occurrence_count + %s,
-                    first_seen_at=LEAST(first_seen_at, COALESCE(%s, NOW())),
-                    last_seen_at=GREATEST(last_seen_at, COALESCE(%s, NOW()))
-                WHERE id=%s
-                """,
-                (Vector(centroid), existing_occurrences, first_seen_at, last_seen_at, cluster_id),
-            )
-            return cluster_id, None, similarity, "semantic"
+        suggested_cluster_id = None
+        match_type = "new"
+        if nearest and similarity is not None and similarity >= review_threshold:
+            suggested_cluster_id = nearest["id"]
+            match_type = "review_candidate"
 
         cluster_id = uuid.uuid4()
         cur.execute(
@@ -294,12 +300,10 @@ class KnowledgeGapTracker:
                 first_seen_at, last_seen_at
             ) VALUES (%s, %s, %s, %s, %s, COALESCE(%s, NOW()), COALESCE(%s, NOW()))
             """,
-            (cluster_id, query[:2000], normalized, Vector(embedding) if embedding is not None else None,
+            (cluster_id, query[:2000], normalized, Vector(embedding),
              existing_occurrences, first_seen_at, last_seen_at),
         )
-        if action == "review" and nearest:
-            return cluster_id, nearest["id"], similarity, "review_candidate"
-        return cluster_id, None, similarity, "new"
+        return cluster_id, suggested_cluster_id, similarity, match_type
 
     def _touch_existing(
         self,
@@ -356,7 +360,8 @@ class KnowledgeGapTracker:
         wiki_candidates: list[dict[str, Any]] | None = None,
         source: str = "automatic",
     ) -> bool:
-        normalized = _normalise(query)
+        safe_query = _privacy_safe_query(query)
+        normalized = _normalise(safe_query)
         if not normalized or not self.database_url:
             return False
         fingerprint = _fingerprint(normalized)
@@ -375,7 +380,7 @@ class KnowledgeGapTracker:
                     exact = cur.fetchone()
                     if exact and exact[0]:
                         self._touch_existing(
-                            cur, fingerprint=fingerprint, query=query, reason=reason,
+                            cur, fingerprint=fingerprint, query=safe_query, reason=reason,
                             conversation_id=conversation_id, query_id=query_id,
                             evidence=evidence, source=source,
                         )
@@ -407,13 +412,13 @@ class KnowledgeGapTracker:
                     if existing:
                         if existing[1]:
                             self._touch_existing(
-                                cur, fingerprint=fingerprint, query=query, reason=reason,
+                                cur, fingerprint=fingerprint, query=safe_query, reason=reason,
                                 conversation_id=conversation_id, query_id=query_id,
                                 evidence=evidence, source=source,
                             )
                             return True
                         cluster_id, suggested_id, similarity, match_type = self._assign_cluster(
-                            cur, query=query, normalized=normalized, embedding=embedding,
+                            cur, query=safe_query, normalized=normalized, embedding=embedding,
                             existing_occurrences=int(existing[2]),
                             first_seen_at=existing[3],
                             last_seen_at=existing[4],
@@ -428,14 +433,14 @@ class KnowledgeGapTracker:
                              suggested_id, similarity, match_type, fingerprint),
                         )
                         self._touch_existing(
-                            cur, fingerprint=fingerprint, query=query, reason=reason,
+                            cur, fingerprint=fingerprint, query=safe_query, reason=reason,
                             conversation_id=conversation_id, query_id=query_id,
                             evidence=evidence, source=source,
                         )
                         return True
 
                     cluster_id, suggested_id, similarity, match_type = self._assign_cluster(
-                        cur, query=query, normalized=normalized, embedding=embedding,
+                        cur, query=safe_query, normalized=normalized, embedding=embedding,
                     )
                     cur.execute(
                         """
@@ -447,7 +452,7 @@ class KnowledgeGapTracker:
                         ) VALUES (%s,%s,%s,%s,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)
                         """,
                         (
-                            fingerprint, normalized, query[:2000], reason[:200],
+                            fingerprint, normalized, safe_query[:2000], reason[:200],
                             conversation_id, query_id, Jsonb(evidence), source,
                             Vector(embedding) if embedding is not None else None,
                             cluster_id, suggested_id, similarity, match_type,
