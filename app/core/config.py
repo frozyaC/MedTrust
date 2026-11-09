@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dimension: int = 1024
 
+    # Semantic grouping of uncovered registrar questions. Exact SHA-256 deduplication
+    # remains active independently of these settings.
+    knowledge_gap_semantic_enabled: bool = True
+    knowledge_gap_similarity_threshold: float = 0.90
+    knowledge_gap_review_threshold: float = 0.80
+
     postgres_dsn: str = "postgresql://medtrust:medtrust@localhost:5433/medtrust"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     knowledge_index_archive: str = "data/sample_sufler.zip"
@@ -39,7 +45,7 @@ class Settings(BaseSettings):
 
     # Per-request RAG context budget to avoid large prompt and output token usage.
     rag_max_web_sources: int = 2
-    rag_max_wiki_sources: int = 5
+    rag_max_wiki_sources: int = 3
     rag_max_source_chars: int = 4200
     rag_max_history_messages: int = 4
     rag_max_history_message_chars: int = 600
