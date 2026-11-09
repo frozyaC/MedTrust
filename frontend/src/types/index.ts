@@ -18,6 +18,7 @@ export interface Source {
   path?: string;
   quote: string;
   url: string;
+  documentId?: string;
 }
 
 export interface AnswerSection {
@@ -117,4 +118,10 @@ export interface WebSearchData {
   sources: WebSearchSource[];
   warning?: string;
   diagnostics?: Record<string, unknown>;
+}
+
+/** Ответ GET /api/v1/knowledge/{document_id}/content */
+export interface WikiDocumentContent {
+  document_id: string;
+  content: string;
 }

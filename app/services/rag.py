@@ -2736,6 +2736,7 @@ class RagService:
                 "answerability_reason": doc.get("answerability_reason"),
                 "matched_query_aspects": doc.get("_matched_query_aspects") or [question],
                 "relevance_query_aspect": doc.get("_relevance_query_aspect"),
+                "document_id": str(doc["document_id"]), # F Для модалки
             })
         for idx, result in enumerate(web_results, start=1):
             matched_aspects = (web_result_aspects or {}).get(result.url.rstrip("/").casefold(), []) or [question]

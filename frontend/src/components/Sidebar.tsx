@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Patient } from '../types';
 import { PatientCard } from './PatientCard';
-import { Search, Users, X } from 'lucide-react';
+import { AlertCircle, Search, Users, X } from 'lucide-react';
 
 interface SidebarProps {
   patients: Patient[];
@@ -77,6 +77,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
           )}
         </div>
+
+        {/* Selected patient banner */}
+        {/* {!selectedPatient && (
+          <div className="mb-3 flex items-center gap-2 rounded-lg border border-[#FDE68A] border-l-4 border-l-[#F59E0B] bg-[#FEF3C7] px-3 py-2 text-xs">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[#B45309]" />
+            <span className="font-semibold text-[#B45309]">Пациент не выбран</span>
+          </div>
+        )} */}
 
         {/* Filter chips */}
         <div className="flex gap-1.5 p-0.5 bg-[#DBEAFE]/50 rounded-lg text-xs font-medium">

@@ -184,6 +184,21 @@ class KnowledgeRepository:
             )
             conn.commit()
 
+    # F Добавил для модалки
+    def get_document_content(self, document_id: str) -> str | None:
+        with get_connection() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM knowledge_documents WHERE id=%s",
+                (document_id,),
+            ).fetchone()
+            if not exists:
+                return None
+            rows = conn.execute(
+                "SELECT content FROM knowledge_chunks WHERE document_id=%s ORDER BY chunk_index",
+                (document_id,),
+            ).fetchall()
+        return "\n\n".join(str(row[0]) for row in rows)
+
 
 class ConversationRepository:
     def create(self, title: str | None = None) -> str:

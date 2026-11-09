@@ -16,6 +16,7 @@ import { ChatComposer } from './components/ChatComposer';
 import { AnswerSkeleton } from './components/AnswerSkeleton';
 import { MessageThread } from './components/MessageThread';
 import { WebAnswerBlock } from './components/WebAnswerBlock';
+import { SourceModal } from './components/SourceModal';
 import { MOCK_PATIENTS, MOCK_ANSWERS } from './data/mockData';
 import { FeedbackReasonCode, getFeedbackReason } from './data/feedbackReasons';
 import {
@@ -24,6 +25,7 @@ import {
   FeedbackRating,
   Patient,
   ScreenState,
+  Source,
 } from './types';
 import { QueryApiError, askAndBuildItem, askWebSearch, cancelGap, loadConversationItems, sendFeedback } from './api/query';
 import {
@@ -196,6 +198,7 @@ export default function App() {
   } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [suggestion, setSuggestion] = useState('');
+  const [openSource, setOpenSource] = useState<Source | null>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
   const sidebarSearchRef = useRef<HTMLInputElement>(null);
   const [sidebarHighlighted, setSidebarHighlighted] = useState(false);
@@ -814,6 +817,7 @@ export default function App() {
                                 ),
                               )
                             }
+                            onOpenSource={setOpenSource}
                           />
                         )}
                         {item.feedback ? (
@@ -939,6 +943,13 @@ export default function App() {
 
       {toastMessage && (
         <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
+      )}
+
+      {openSource && (
+        <SourceModal
+          source={openSource}
+          onClose={() => setOpenSource(null)}
+        />
       )}
 
       {isEditorOpen && (

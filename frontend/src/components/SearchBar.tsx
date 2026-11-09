@@ -59,8 +59,8 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       <div
         className={`flex items-center justify-between gap-3 text-xs px-3.5 py-2.5 rounded-lg border ${
           selectedPatient
-            ? 'bg-[#EFF6FF] border-[#DBEAFE]'
-            : 'bg-[#FFFBEB] border-[#FDE68A]'
+            ? 'bg-[#EFF6FF] border-[#DBEAFE] border-l-4 border-l-[#3B82F6]'
+            : 'bg-[#FEF3C7] border-[#FDE68A] border-l-4 border-l-[#F59E0B]'
         }`}
       >
         {selectedPatient ? (

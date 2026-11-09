@@ -116,6 +116,14 @@ def get_document(document_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Документ не найден")
     return result
 
+# F Для модалки
+@router.get("/knowledge/{document_id}/content")
+def get_document_content(document_id: str) -> dict:
+    content = KnowledgeRepository().get_document_content(document_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Документ не найден")
+    return {"document_id": document_id, "content": content}
+
 
 @router.post("/feedback")
 def feedback(request: FeedbackRequest) -> dict:

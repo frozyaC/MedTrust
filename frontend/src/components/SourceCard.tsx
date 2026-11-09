@@ -9,6 +9,7 @@ interface SourceCardProps {
   highlightedId: string | null;
   idPrefix?: string;
   showHeader?: boolean;
+  onOpenSource?: (source: Source) => void;
 }
 
 interface ExpandableQuoteProps {
@@ -95,6 +96,7 @@ export const SourceCard: React.FC<SourceCardProps> = ({
   highlightedId,
   idPrefix = 'source',
   showHeader = true,
+  onOpenSource,
 }) => {
   return (
     <div className={`space-y-3 max-w-[800px] ${showHeader ? 'mt-6' : 'mt-3'}`}>
@@ -232,8 +234,18 @@ export const SourceCard: React.FC<SourceCardProps> = ({
                 </ExpandableQuote>
               </div>
 
-              {src.url ? (
-                <div className="flex justify-end pt-1">
+              <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+                {onOpenSource && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenSource(src)}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#2563EB] hover:text-[#1D4ED8] hover:underline transition-colors"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Открыть источник</span>
+                  </button>
+                )}
+                {src.url && (
                   <a
                     href={src.url}
                     target="_blank"
@@ -243,8 +255,8 @@ export const SourceCard: React.FC<SourceCardProps> = ({
                     <span>Открыть в wiki.js</span>
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
-                </div>
-              ) : null}
+                )}
+              </div>
             </div>
           );
         })}

@@ -27,6 +27,7 @@ interface QuerySource {
   snippet: string | null;
   citation?: string;
   used_in_answer?: boolean;
+  document_id?: string;
 }
 
 interface SourceEvidenceCheck {
@@ -136,6 +137,7 @@ export function mapQueryResponse(
       path: source.path ?? '',
       quote: source.snippet ?? '',
       url: source.url ?? '',
+      documentId: source.document_id,
     }));
 
   const diagnostics = data.answer_review_diagnostics;

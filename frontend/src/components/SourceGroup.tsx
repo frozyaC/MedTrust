@@ -1,5 +1,5 @@
 import React from 'react';
-import { AnswerData } from '../types';
+import { AnswerData, Source } from '../types';
 import { SourceCard } from './SourceCard';
 import { BookOpen, ChevronDown } from 'lucide-react';
 
@@ -9,6 +9,7 @@ interface SourceGroupProps {
   expanded: boolean;
   highlightedId: string | null;
   onToggle: () => void;
+  onOpenSource?: (source: Source) => void;
 }
 
 export const SourceGroup: React.FC<SourceGroupProps> = ({
@@ -17,6 +18,7 @@ export const SourceGroup: React.FC<SourceGroupProps> = ({
   expanded,
   highlightedId,
   onToggle,
+  onOpenSource,
 }) => (
   <div className="max-w-[800px]">
     <button
@@ -35,6 +37,7 @@ export const SourceGroup: React.FC<SourceGroupProps> = ({
         highlightedId={highlightedId}
         idPrefix={`source-${answerId}`}
         showHeader={false}
+        onOpenSource={onOpenSource}
       />
     )}
   </div>

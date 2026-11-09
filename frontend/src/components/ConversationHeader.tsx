@@ -26,7 +26,13 @@ export const ConversationHeader: React.FC<ConversationHeaderProps> = ({
   onNewConversation,
 }) => (
   <div className="min-h-16 bg-white border-b border-[#BFDBFE] px-6 py-3 flex items-center gap-3 shrink-0">
-    <div className="flex items-center gap-2 text-xs bg-[#EFF6FF] px-3.5 py-2.5 rounded-lg border border-[#DBEAFE] min-w-0">
+    <div
+      className={`flex items-center gap-2 text-xs px-3.5 py-2.5 rounded-lg border min-w-0 ${
+        patient
+          ? 'bg-[#EFF6FF] border-[#DBEAFE] border-l-4 border-l-[#3B82F6]'
+          : 'bg-[#FEF3C7] border-[#FDE68A] border-l-4 border-l-[#F59E0B]'
+      }`}
+    >
       {patient ? (
         <>
           <UserCheck className="w-4 h-4 text-[#2563EB] shrink-0" />
@@ -34,15 +40,15 @@ export const ConversationHeader: React.FC<ConversationHeaderProps> = ({
         </>
       ) : (
         <>
-          <AlertCircle className="w-4 h-4 text-[#F59E0B] shrink-0" />
-          <span className="text-[#475569]">Пациент не выбран — ответ без персонализации</span>
+          <AlertCircle className="w-4 h-4 text-[#B45309] shrink-0" />
+          <span className="font-semibold text-[#B45309]">Пациент не выбран — ответ без персонализации</span>
         </>
       )}
     </div>
     <button
       type="button"
       onClick={onChangePatient}
-      className="px-3 py-2 text-xs font-semibold text-[#2563EB] bg-white border border-[#BFDBFE] rounded-lg hover:bg-[#EFF6FF] transition-colors inline-flex items-center gap-1.5 shrink-0"
+      className="ml-2 px-3 py-2 text-xs font-semibold text-[#2563EB] bg-white border border-[#BFDBFE] rounded-lg hover:bg-[#EFF6FF] transition-colors inline-flex items-center gap-1.5 shrink-0"
     >
       <RefreshCw className="w-3.5 h-3.5" />
       Сменить
