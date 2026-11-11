@@ -241,6 +241,19 @@ function GapRow({
       </td>
 
       <td className="px-2.5 py-3 align-middle">
+        {gap.suggestedMergeCount && gap.suggestedMergeCount > 0 ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full border border-med-warning/40 bg-med-warning/10 px-2 py-0.5 text-xs font-semibold text-med-text-primary"
+            title={`Похожих пробелов: ${gap.suggestedMergeCount}. Можно объединить в группу.`}
+          >
+            {gap.suggestedMergeCount}
+          </span>
+        ) : (
+          <span className="text-xs text-med-text-muted">—</span>
+        )}
+      </td>
+
+      <td className="px-2.5 py-3 align-middle">
         <span
           className="line-clamp-2 text-sm leading-5 text-med-text-secondary"
           title={gap.resolvedQuery}
@@ -324,6 +337,7 @@ export function GapTable({
           <colgroup>
             <col className="w-[96px]" />
             <col className="w-[176px]" />
+            <col className="w-[100px]" />
             <col className="w-[150px]" />
             <col className="w-[138px]" />
             <col className="w-[170px]" />
@@ -339,6 +353,12 @@ export function GapTable({
               </th>
               <th className="px-2.5 py-2.5 text-xs font-semibold uppercase tracking-wide text-med-text-muted">
                 Исходный вопрос
+              </th>
+              <th
+                className="px-2.5 py-2.5 text-xs font-semibold uppercase tracking-wide text-med-text-muted"
+                title="Сколько похожих пробелов бэк предлагает объединить"
+              >
+                Похожих
               </th>
               <th className="px-2.5 py-2.5 text-xs font-semibold uppercase tracking-wide text-med-text-muted">
                 Нормализованный запрос
@@ -399,8 +419,8 @@ export function GapTableSkeleton() {
 
       <div className="overflow-hidden">
         <div className="min-w-[1080px]">
-          <div className="grid grid-cols-[96px_176px_150px_138px_170px_98px_82px_82px_70px] gap-2 border-b border-med-border bg-med-bg/40 px-3 py-3">
-            {Array.from({ length: 9 }).map((_, index) => (
+          <div className="grid grid-cols-[96px_176px_100px_150px_138px_170px_98px_82px_82px_70px] gap-2 border-b border-med-border bg-med-bg/40 px-3 py-3">
+            {Array.from({ length: 10 }).map((_, index) => (
               <div key={index} className="h-3 animate-pulse rounded bg-med-border/60" />
             ))}
           </div>

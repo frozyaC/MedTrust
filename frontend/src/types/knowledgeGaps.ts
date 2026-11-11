@@ -61,6 +61,19 @@ export interface KnowledgeGap {
   feedback?: GapFeedback;
   comments: GapComment[];
   webSearchUsed: boolean;
+  // ── Группировка похожих пробелов (появится после правок бэка) ──
+  /** Сколько других пробелов бэк предлагает смержить с этим */
+  suggestedMergeCount?: number;
+  /** Канонический вопрос группы, к которой относится пробел */
+  canonicalQuestion?: string;
+  /** id кластера, к которому относится пробел (legacy, автоматический) */
+  clusterId?: string | null;
+  /** id кластера, который бэк предлагает как «похожий» */
+  suggestedClusterId?: string | null;
+  /** Насколько этот пробел похож на канонический вопрос (0..1) */
+  similarityScore?: number | null;
+  /** Тип связи с кластером */
+  clusterMatchType?: 'unassigned' | 'suggested' | 'review_candidate' | 'owner_confirmed' | string;
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string;

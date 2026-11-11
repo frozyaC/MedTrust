@@ -201,6 +201,25 @@ export function GapDetailPanel({
             )}
           </PanelSection>
 
+          {gap.suggestedMergeCount && gap.suggestedMergeCount > 0 && (
+            <PanelSection title="Схожие пробелы">
+              <div className="rounded-lg border border-med-warning/40 bg-med-warning/10 px-3 py-2.5">
+                <div className="flex items-start gap-2">
+                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-med-warning" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-med-text-primary">
+                      Найдено похожих пробелов: {gap.suggestedMergeCount}
+                    </p>
+                    <p className="mt-0.5 text-xs leading-4 text-med-text-secondary">
+                      Возможно, это тот же пробел в базе знаний. Управление группами
+                      появится после обновления бэкенда.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </PanelSection>
+          )}
+
           <PanelSection title="Связи">
             <div className="space-y-1.5 rounded-lg border border-med-border bg-med-surface p-2.5">
               <IdRow label="query_id" value={gap.queryId} />
