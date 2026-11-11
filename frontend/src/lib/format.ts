@@ -89,8 +89,8 @@ export function formatDuration(ms: number): string {
   return `${hours} ${pluralRu(hours, ['час', 'часа', 'часов'])}`;
 }
 
-export function shortId(id: string): string {
-  return id.slice(0, 8);
+export function shortId(id: string | number): string {
+  return String(id).slice(0, 8);
 }
 
 export function toDateInputValue(date: Date): string {

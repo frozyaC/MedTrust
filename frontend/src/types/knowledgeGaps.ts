@@ -46,7 +46,7 @@ export interface GapComment {
  * only `status`, `comments`, `resolvedAt` and `resolvedBy` change.
  */
 export interface KnowledgeGap {
-  id: string;
+  id: string | number;
   queryId: string;
   conversationId: string;
   sourceMessageId: string;

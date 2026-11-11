@@ -354,7 +354,7 @@ export function KnowledgeGapsPage() {
   }, [gaps, periodGaps, range]);
 
   const selectedGap = selectedGapId
-    ? (gaps.find((gap) => gap.id === selectedGapId) ?? null)
+    ? (gaps.find((gap) => String(gap.id) === selectedGapId) ?? null)
     : null;
 
   const resetFilters = (resetPeriod = false) => {
@@ -381,7 +381,7 @@ export function KnowledgeGapsPage() {
     onSuccess?: () => void,
   ) => {
     const run = async () => {
-      const savedComment = await updateGapStatus(gap.id, status, {
+      const savedComment = await updateGapStatus(String(gap.id), status, {
         ...options,
         author: DEMO_ADMIN_USER.name,
       });
@@ -433,7 +433,7 @@ export function KnowledgeGapsPage() {
 
   const commitComment = async (gap: KnowledgeGap, comment: string) => {
     const run = async () => {
-      const saved = await addGapComment(gap.id, comment, DEMO_ADMIN_USER.name);
+      const saved = await addGapComment(String(gap.id), comment, DEMO_ADMIN_USER.name);
 
       setGaps((current) =>
         current.map((item) =>
@@ -650,7 +650,7 @@ export function KnowledgeGapsPage() {
                     gaps={visibleGaps}
                     totalCount={periodGaps.length}
                     selectedId={selectedGapId}
-                    onOpen={(gap) => setSelectedGapId(gap.id)}
+                    onOpen={(gap) => setSelectedGapId(String(gap.id))}
                     onRequestStatus={handleRequestStatus}
                     onCopyId={copyToast}
                   />

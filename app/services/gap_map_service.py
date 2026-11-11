@@ -609,7 +609,10 @@ class GapMapService:
                    latest.reason_code, latest.source, latest.answerability_reason,
                    latest.id, latest.source_ids,
                    user_message.id,
-                   (SELECT COUNT(DISTINCT ei.event_id) FROM knowledge_gap_event_items ei WHERE ei.gap_id=g.id)
+                   (SELECT COUNT(DISTINCT ei.event_id) FROM knowledge_gap_event_items ei WHERE ei.gap_id=g.id),
+                   f.id, f.rating, f.comment,
+                   (SELECT json_agg(json_build_object('id', c.id, 'author', c.author, 'body', c.body, 'createdAt', c.created_at) ORDER BY c.created_at, c.id)
+                      FROM knowledge_gap_comments c WHERE c.gap_id = g.id)
             FROM knowledge_gaps g
             LEFT JOIN conversation_query_context q ON q.query_id=g.last_query_id
             LEFT JOIN LATERAL (
@@ -622,6 +625,13 @@ class GapMapService:
                 WHERE query_id=g.last_query_id AND role='user'
                 ORDER BY created_at DESC, id DESC LIMIT 1
             ) user_message ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT id, rating, comment
+                FROM query_feedback
+                WHERE query_id = g.last_query_id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) f ON TRUE
             {('WHERE ' + ' AND '.join(where)) if where else ''}
             ORDER BY {order} LIMIT %s
         """
@@ -642,6 +652,17 @@ class GapMapService:
                 "previousMessageId": str(r[17]) if r[17] else None,
                 "sourceIds": _json(r[22], []), "occurrenceCount": int(r[11]),
                 "eventCount": int(r[24] or 0), "ownerComment": r[13] or "",
+                "feedback": (
+                    {
+                        "id": str(r[25]),
+                        "rating": r[26],
+                        "comment": (r[27] or "").strip(),
+                    }
+                    if r[25] is not None
+                    else None
+                ),
+                "comments": r[28] if isinstance(r[28], list) else [],
+                "webSearchUsed": False,
                 "resolvedBy": r[12], "createdAt": r[6].isoformat(),
                 "updatedAt": r[7].isoformat(),
                 **({"resolvedAt": r[8].isoformat()} if r[8] else {}),

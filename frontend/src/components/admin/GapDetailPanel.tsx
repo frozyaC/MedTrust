@@ -17,6 +17,15 @@ import { CopyButton } from './CopyButton';
 import { SourceBadge, StatusBadge } from './GapBadges';
 import { GapStatusTimeline } from './GapStatusTimeline';
 import type { RequestedGapStatus } from './GapTable';
+import { FeedbackReasonCode, getFeedbackReason } from '../../data/feedbackReasons';
+
+function formatReasonLabel(reason: string | null | undefined): string {
+  if (!reason) return '—';
+  const trimmed = reason.trim().replace(/^user_feedback:/, '');
+  const known = getFeedbackReason(trimmed as FeedbackReasonCode);
+  if (known) return known.label;
+  return trimmed || '—';
+}
 
 interface GapDetailPanelProps {
   gap: KnowledgeGap;
@@ -182,7 +191,7 @@ export function GapDetailPanel({
 
             <div className="flex gap-2 text-sm leading-5 text-med-text-secondary">
               <Info className="mt-0.5 h-4 w-4 shrink-0 text-med-primary" />
-              <span>{gap.answerabilityReason}</span>
+              <span>{formatReasonLabel(gap.answerabilityReason)}</span>
             </div>
 
             {typeof gap.confidence === 'number' && (
@@ -266,7 +275,7 @@ export function GapDetailPanel({
 
                   {gap.feedback.comment && (
                     <blockquote className="border-l-2 border-med-border pl-2.5 text-sm leading-5 text-med-text-secondary">
-                      «{gap.feedback.comment}»
+                      «{gap.feedback.comment.replace(/^\[[a-z_]+\]\s*/, '').trim()}»
                     </blockquote>
                   )}
                 </div>
@@ -374,7 +383,7 @@ export function GapDetailPanel({
 
           <div className="mt-3 flex items-center justify-between gap-2">
             <CopyButton
-              value={gap.id}
+              value={String(gap.id)}
               label="Скопировать ID"
               onCopied={onCopyId}
               className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-medium text-med-text-secondary transition-colors hover:bg-med-bg hover:text-med-primary"

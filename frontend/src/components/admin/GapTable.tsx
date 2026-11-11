@@ -208,12 +208,12 @@ function GapRow({
         <div className="flex items-center gap-0.5">
           <span
             className="truncate font-mono text-xs text-med-text-secondary"
-            title={gap.id}
+            title={String(gap.id)}
           >
             {shortId(gap.id)}
           </span>
           <CopyButton
-            value={gap.id}
+            value={String(gap.id)}
             onCopied={onCopyId}
             className="inline-flex shrink-0 items-center rounded p-0.5 text-med-text-muted opacity-60 transition-all hover:bg-med-bg hover:text-med-primary group-hover:opacity-100"
           />
