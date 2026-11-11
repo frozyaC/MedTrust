@@ -45,6 +45,13 @@ import {
   loadPopularQuestions,
   savePopularQuestions,
 } from './data/popularQuestions';
+import {
+  DEFAULT_SUGGESTIONS,
+  loadSuggestions,
+  saveSuggestions,
+} from './data/suggestionQuestions';
+import { SuggestionQuestionsConfig } from './types/suggestionQuestions';
+import { SuggestionEditor } from './components/SuggestionEditor';
 
 type Threads = Record<string, ConversationItem[]>;
 type ConversationIds = Record<string, string>;
@@ -188,6 +195,10 @@ export default function App() {
     loadPopularQuestions,
   );
   const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<SuggestionQuestionsConfig>(
+    loadSuggestions,
+  );
+  const [isSuggestionEditorOpen, setIsSuggestionEditorOpen] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(MOCK_PATIENTS[0]);
   const [screenState, setScreenState] = useState<ScreenState>('ready');
   const [threads, setThreads] = useState<Threads>({});
@@ -948,10 +959,12 @@ export default function App() {
 
             {latestCompleted && (
               <SuggestionRow
+                suggestions={suggestions.suggestions}
                 onSelect={(value) => {
                   setSuggestion('');
                   window.setTimeout(() => setSuggestion(value), 0);
                 }}
+                onEdit={() => setIsSuggestionEditorOpen(true)}
               />
             )}
             <ChatComposer
@@ -983,6 +996,18 @@ export default function App() {
             setToastMessage('Популярные вопросы обновлены.');
           }}
           onClose={() => setIsEditorOpen(false)}
+        />
+      )}
+
+      {isSuggestionEditorOpen && (
+        <SuggestionEditor
+          config={suggestions}
+          onSave={(next) => {
+            setSuggestions(next);
+            saveSuggestions(next);
+            setToastMessage('Уточняющие вопросы обновлены.');
+          }}
+          onClose={() => setIsSuggestionEditorOpen(false)}
         />
       )}
     </div>
