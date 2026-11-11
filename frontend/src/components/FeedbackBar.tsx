@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ThumbsUp, AlertCircle, Copy, Check, Send, X } from 'lucide-react';
+import { ThumbsUp, AlertCircle, Copy, Check, Send, X, Search } from 'lucide-react';
 import {
   FEEDBACK_REASONS,
   FeedbackReasonCode,
@@ -12,11 +12,19 @@ interface FeedbackBarProps {
     reasonCode?: FeedbackReasonCode,
     comment?: string,
   ) => void;
+  /**
+   * Кнопка «Отправить и выполнить веб-поиск»: отправляет отзыв и сразу
+   */
+  onSendAndSearch?: (reasonCode: FeedbackReasonCode, comment?: string) => void;
   /** Если передан — тост показывается после отправки (для демо можно не передавать) */
   isSubmitting?: boolean;
 }
 
-export const FeedbackBar: React.FC<FeedbackBarProps> = ({ onFeedback, isSubmitting = false }) => {
+export const FeedbackBar: React.FC<FeedbackBarProps> = ({
+  onFeedback,
+  onSendAndSearch,
+  isSubmitting = false,
+}) => {
   const [state, setState] = useState<'idle' | 'choosing' | 'sending' | 'done'>('idle');
   const [selectedReason, setSelectedReason] = useState<FeedbackReasonCode | null>(null);
   const [comment, setComment] = useState('');
@@ -56,6 +64,26 @@ export const FeedbackBar: React.FC<FeedbackBarProps> = ({ onFeedback, isSubmitti
     setState('sending');
     console.log('sending feedback:', { selectedReason, comment: trimmed });
     onFeedback('negative', selectedReason, trimmed || undefined);
+    setState('done');
+  };
+
+  const handleSubmitAndSearch = () => {
+    if (!selectedReason || !onSendAndSearch) return;
+
+    const reason = getFeedbackReason(selectedReason);
+    if (!reason) return;
+
+    const trimmed = comment.trim();
+    if (reason.requiresComment && !trimmed) {
+      setError('Пожалуйста, опишите проблему в комментарии.');
+      return;
+    }
+
+    setState('sending');
+    // 1. Отправляем отзыв (App.tsx сам сделает sendFeedback)
+    onFeedback('negative', selectedReason, trimmed || undefined);
+    // 2. И сразу запускаем веб-поиск (App.tsx вызовет askWebSearch)
+    onSendAndSearch(selectedReason, trimmed || undefined);
     setState('done');
   };
 
@@ -181,7 +209,7 @@ export const FeedbackBar: React.FC<FeedbackBarProps> = ({ onFeedback, isSubmitti
           </div>
         )}
 
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             onClick={resetPanel}
@@ -199,6 +227,18 @@ export const FeedbackBar: React.FC<FeedbackBarProps> = ({ onFeedback, isSubmitti
             <Send className="w-3.5 h-3.5" />
             {state === 'sending' ? 'Отправка...' : 'Отправить'}
           </button>
+          {onSendAndSearch && (
+            <button
+              type="button"
+              onClick={handleSubmitAndSearch}
+              disabled={!selectedReason || state === 'sending'}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#B45309] text-white hover:bg-[#92400E] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              title="Отправить отзыв и сразу выполнить поиск в интернете"
+            >
+              <Search className="w-3.5 h-3.5" />
+              {state === 'sending' ? 'Отправка...' : 'Отправить и выполнить веб-поиск'}
+            </button>
+          )}
         </div>
       </div>
     );

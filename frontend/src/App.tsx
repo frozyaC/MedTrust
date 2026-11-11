@@ -544,6 +544,19 @@ export default function App() {
   };
 
   /**
+   * «Отправить и выполнить веб-поиск» из FeedbackBar.
+   */
+  const handleSendAndSearch = async (
+    itemId: string,
+    _reasonCode: FeedbackReasonCode,
+    _comment?: string,
+  ): Promise<void> => {
+    const item = currentThread.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+    await handleWebSearch(itemId, item.question);
+  };
+
+  /**
    * «Отметить как пробел» в no-answer блоке.
    */
   const handleMarkAsGap = async (
@@ -830,9 +843,18 @@ export default function App() {
                             onFeedback={(type, reasonCode, comment) =>
                               handleFeedback(item.id, type, reasonCode, comment)
                             }
+                            onSendAndSearch={(reasonCode, comment) =>
+                              handleSendAndSearch(item.id, reasonCode, comment)
+                            }
                           />
                         )}
                       </>
+                    )}
+
+                  {(item.status === 'answer' || item.status === 'conflict') &&
+                    item.webSearchState === 'success' &&
+                    item.webAnswer && (
+                      <WebAnswerBlock data={item.webAnswer} />
                     )}
 
                   {item.status === 'no_answer' && (
