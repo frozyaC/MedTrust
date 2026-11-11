@@ -199,7 +199,6 @@ class KnowledgeRepository:
             ).fetchall()
         return "\n\n".join(str(row[0]) for row in rows)
 
-
 class ConversationRepository:
     def create(self, title: str | None = None) -> str:
         conversation_id = uuid.uuid4()

@@ -49,5 +49,30 @@ class FeedbackRequest(BaseModel):
     rating: Literal["positive", "negative"]
     comment: str | None = Field(default=None, max_length=4000)
     reason_code: str | None = Field(default=None, max_length=64)
+    # Deprecated compatibility fields: server resolves question/conversation by query_id.
     question: str | None = Field(default=None, max_length=4000)
     conversation_id: UUID | None = None
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class GapGroupConfirmRequest(BaseModel):
+    member_ids: list[int] | None = None
+    author: str | None = Field(default=None, max_length=200)
+
+
+class GapGroupResolveRequest(BaseModel):
+    member_ids: list[int] | None = None
+    note: str = Field(min_length=1, max_length=2000)
+    author: str | None = Field(default=None, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class GapGroupDetachRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    author: str | None = Field(default=None, max_length=200)
+
+
+class QualityIssueStatusRequest(BaseModel):
+    status: Literal["open", "in_review", "resolved", "dismissed"]
+    note: str | None = Field(default=None, max_length=2000)
+    author: str | None = Field(default=None, max_length=200)

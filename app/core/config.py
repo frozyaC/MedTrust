@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dimension: int = 1024
 
+    # Semantic grouping of uncovered registrar questions. Exact SHA-256 deduplication
+    # remains active independently of these settings.
+    knowledge_gap_semantic_enabled: bool = True
+    knowledge_gap_similarity_threshold: float = 0.90
+    knowledge_gap_review_threshold: float = 0.80
+
     postgres_dsn: str = "postgresql://medtrust:medtrust@localhost:5433/medtrust"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     knowledge_index_archive: str = "data/sample_sufler.zip"

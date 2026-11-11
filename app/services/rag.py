@@ -629,14 +629,50 @@ class RagService:
 
     @staticmethod
     def _wiki_document_key(doc: dict) -> tuple[str, str]:
-        """Return a stable identity for diversity across chunks of the same article."""
+        """Group chunks by canonical Wiki article path before any database chunk ID."""
+        path = str(doc.get("wiki_path") or doc.get("path") or "").strip()
+        if path:
+            canonical_path = re.sub(r"\.md$", "", path.replace("\\", "/").strip("/").casefold())
+            return ("path", canonical_path)
         document_id = str(doc.get("document_id") or "").strip()
         if document_id:
             return ("id", document_id)
-        return (
-            str(doc.get("title") or "").strip().casefold(),
-            str(doc.get("wiki_path") or "").strip().casefold(),
+        return ("title", str(doc.get("title") or "").strip().casefold())
+
+    @staticmethod
+    def _same_wiki_path(left: dict, right: dict) -> bool:
+        left_path = re.sub(
+            r"\.md$", "", str(left.get("wiki_path") or left.get("path") or "")
+            .replace("\\", "/").strip("/").casefold(),
         )
+        right_path = re.sub(
+            r"\.md$", "", str(right.get("wiki_path") or right.get("path") or "")
+            .replace("\\", "/").strip("/").casefold(),
+        )
+        return bool(left_path and right_path and left_path == right_path)
+
+    @staticmethod
+    def _is_service_code_supplement(doc: dict) -> bool:
+        """Identify a service-code row that belongs to a relevant Wiki article."""
+        text = "\n".join(str(doc.get(key) or "") for key in ("title", "section", "content"))
+        return bool(re.search(r"\|\s*\d{4,8}\s*\|", text) or re.search(r"код\s+услуг\w*\s*[:№]?\s*\d{4,8}", text, re.IGNORECASE))
+
+    @staticmethod
+    def _is_booking_sequence_supplement(doc: dict) -> bool:
+        """Identify a booking-order rule that supplements a prep section."""
+        text = "\n".join(str(doc.get(key) or "") for key in ("section", "content"))
+        return bool(re.search(
+            r"запис\w*.{0,80}до\s+(?:фгс|фгдс|рентгеноскоп\w*|дыхательн\w*)|"
+            r"до\s+(?:фгс|фгдс|рентгеноскоп\w*|дыхательн\w*).{0,80}узи|"
+            r"выполнять\s+нельзя",
+            text,
+            re.IGNORECASE,
+        ))
+
+    @classmethod
+    def _is_operational_procedure_supplement(cls, doc: dict) -> bool:
+        """Identify same-article service-code or booking-order fragments."""
+        return cls._is_service_code_supplement(doc) or cls._is_booking_sequence_supplement(doc)
 
     @classmethod
     def _annotate_wiki_docs(cls, docs: list[dict], question: str) -> list[dict]:
@@ -697,6 +733,31 @@ class RagService:
                 content=chunk_context,
                 source_type="wiki_chunk_content",
             )
+            # Preparation facts are often stored in a subsection whose body does
+            # not repeat the procedure name (for example, a page titled "УЗИ ОБП"
+            # with a child section "Подготовка"). If the body has a preparation
+            # instruction but lacks the target name, re-evaluate it with the
+            # article title as context. The specialized preparation gate still
+            # requires both the procedure in the title/section and an instruction
+            # in the section/body, so unrelated sibling chunks cannot pass here.
+            if (
+                body_assessment.reason.startswith("requested_procedure_missing:")
+                and preparation_evidence_problem(
+                    assessment_query,
+                    title=str(doc.get("title") or ""),
+                    path=str(doc.get("wiki_path") or ""),
+                    section=section_scope,
+                    content=str(doc.get("content") or ""),
+                ) is None
+            ):
+                body_assessment = classify_source_relevance(
+                    assessment_query,
+                    title=str(doc.get("title") or ""),
+                    path=str(doc.get("wiki_path") or ""),
+                    section=section_scope,
+                    content=str(doc.get("content") or ""),
+                    source_type="wiki_chunk_content_with_article_context",
+                )
             passage_score, passage_reason = answerability_score(
                 assessment_query,
                 title=str(doc.get("title") or ""),
@@ -788,8 +849,66 @@ class RagService:
             "после этого", "в таком случае", "что если",
         )) and len(normalized_question.split()) <= 12
         eligible: list[dict] = []
-        for doc in annotated:
-            if doc["source_relevance_label"] == "irrelevant":
+        preparation_supplement_query = bool(preparation_evidence_problem(
+            question, title="", path="", section="", content=""
+        ) is not None)
+        service_code_supplement_query = bool(re.search(
+            r"(?<![а-я])оак(?![а-я])|вич|анализ\w*|исследован\w*|услуг\w*|"
+            r"процедур\w*|узи|ультразвуков\w*|забор\w*\s+кров\w*",
+            question,
+            re.IGNORECASE,
+        ))
+        strong_context_docs = [
+            doc for doc in annotated
+            if doc.get("source_relevance_label") == "relevant"
+            # A relevant section with a strong article-level match may score just
+            # below 0.50 when its body is intentionally concise (e.g. HIV result
+            # timing). Keep it as an anchor for operational siblings from the same
+            # Wiki article; supplements themselves still need to pass the strict
+            # same-path and operational-fragment checks below.
+            and float(doc.get("answerability_score") or 0.0) >= 0.45
+            and (not preparation_supplement_query or preparation_evidence_problem(
+                question,
+                title=str(doc.get("title") or ""),
+                path=str(doc.get("wiki_path") or doc.get("path") or ""),
+                section=str(doc.get("section") or ""),
+                content=str(doc.get("content") or ""),
+            ) is None)
+            and evidence_rejection_reason(
+                question,
+                title=str(doc.get("title") or ""),
+                url=str(doc.get("source_url") or ""),
+                content=" ".join(str(doc.get(key) or "") for key in ("wiki_path", "path", "section", "content")),
+            ) is None
+        ]
+
+        for original_doc in annotated:
+            doc = original_doc
+            prep_reason = preparation_evidence_problem(
+                question,
+                title=str(doc.get("title") or ""),
+                path=str(doc.get("wiki_path") or ""),
+                section=str(doc.get("section") or ""),
+                content=str(doc.get("content") or ""),
+            )
+            has_same_article_anchor = any(
+                cls._same_wiki_path(doc, strong_doc) for strong_doc in strong_context_docs
+            )
+            is_preparation_supplement = (
+                preparation_supplement_query
+                and prep_reason is not None
+                and prep_reason.startswith("procedure_specific_preparation_instruction_missing:")
+                and has_same_article_anchor
+                and cls._is_operational_procedure_supplement(doc)
+            )
+            is_service_code_supplement = (
+                service_code_supplement_query
+                and not preparation_supplement_query
+                and has_same_article_anchor
+                and cls._is_service_code_supplement(doc)
+            )
+            is_supplement = is_preparation_supplement or is_service_code_supplement
+            if doc["source_relevance_label"] == "irrelevant" and not is_supplement:
                 continue
             guard_reason = evidence_rejection_reason(
                 question,
@@ -800,6 +919,20 @@ class RagService:
             if guard_reason:
                 doc["intent_evidence_guard"] = {"accepted": False, "reason": guard_reason}
                 continue
+            if is_supplement:
+                doc = dict(doc)
+                doc["supplemental_context"] = True
+                doc["source_relevance_label"] = "partial"
+                doc["source_relevance_score"] = max(0.50, float(doc.get("source_relevance_score") or 0.0))
+                doc["source_relevance_reason"] = "same_document_supplemental_operational_context"
+                doc["source_relevance"] = {
+                    **(doc.get("source_relevance") or {}),
+                    "score": doc["source_relevance_score"],
+                    "label": "partial",
+                    "reason": "same_document_supplemental_operational_context",
+                }
+                doc["answerability_score"] = max(0.56, float(doc.get("answerability_score") or 0.0))
+                doc["answerability_reason"] = "same_document_supplemental_operational_context"
             doc["intent_evidence_guard"] = {"accepted": True, "reason": None}
             eligible.append(doc)
         if not eligible and is_bare_follow_up:
@@ -843,6 +976,18 @@ class RagService:
             used_keys.add(key)
             if len(selected) >= limit:
                 return selected[:limit]
+        # Same-article operational supplements (service codes, collection method,
+        # preparation restrictions and booking order) are deliberately selected before
+        # ordinary sibling chunks. Otherwise several broadly relevant chunks can fill
+        # a small context budget and push out the exact code/rule the registrar needs.
+        remaining.sort(
+            key=lambda doc: (
+                bool(doc.get("supplemental_context")),
+                float(doc.get("answerability_score") or 0.0),
+                float(doc.get("rrf_score") or 0.0),
+            ),
+            reverse=True,
+        )
         for doc in remaining:
             # When a query is available, a duplicate article chunk must contribute
             # body-level evidence; article metadata alone is not enough to fill the
@@ -850,6 +995,7 @@ class RagService:
             if (
                 "answerability_score" in doc
                 and float(doc.get("answerability_score") or 0.0) < 0.50
+                and not doc.get("supplemental_context")
             ):
                 continue
             if (
@@ -1422,6 +1568,366 @@ class RagService:
                 result = f"{result.rstrip()}\n\n" + "\n\n".join(sections)
         return result.strip()
 
+    @staticmethod
+    def _medical_preparation_instruction_supported(claim: str, evidence: str) -> bool:
+        """Check that a preparation restriction and its direction appear in cited evidence."""
+        claim_text = (claim or "").casefold().replace("ё", "е")
+        evidence_text = (evidence or "").casefold().replace("ё", "е")
+        checks: list[bool] = []
+
+        food_claim = bool(re.search(
+            r"натощак|голодан\w*|не\s+(?:принимать|употреблять)\s+пищ\w*|нельзя\s+есть|"
+            r"прекратить\s+при[её]м\s+пищ\w*|пуст\w*\s+желуд\w*|fasting|fast\s+for|"
+            r"avoid\s+food|do\s+not\s+eat|nothing\s+by\s+mouth|no\s+food", claim_text, re.I
+        ))
+        if food_claim:
+            checks.append(bool(re.search(
+                r"натощак|голодан\w*|fasting|fast\s+for|avoid\s+food|do\s+not\s+eat|"
+                r"nothing\s+by\s+mouth|no\s+food|не\s+есть|нельзя\s+есть|не\s+принимать\s+пищ|"
+                r"воздерж\w*[^.!?\n]{0,35}пищ|огранич\w*[^.!?\n]{0,35}пищ", evidence_text, re.I
+            )))
+
+        liquid_claim = bool(re.search(
+            r"не\s+пить|нельзя\s+пить|запрещ\w*\s+пить|огранич\w*[^.!?\n]{0,25}жидк|"
+            r"разреш\w*\s+(?:пить|воду)|можно\s+пить|прозрачн\w*\s+жидк|"
+            r"clear\s+liquid|drink\s+up\s+to|do\s+not\s+drink|no\s+liquids|can\s+drink|allowed\s+to\s+drink",
+            claim_text, re.I
+        ))
+        if liquid_claim:
+            allows_liquid = bool(re.search(
+                r"разреш\w*\s+(?:пить|воду)|можно\s+пить|можно\s+употреблять|"
+                r"прозрачн\w*\s+жидк|clear\s+liquid|drink\s+up\s+to|can\s+drink|allowed\s+to\s+drink|"
+                r"may\s+drink", claim_text, re.I
+            ))
+            if allows_liquid:
+                evidence_allows = bool(re.search(
+                    r"разреш\w*\s+(?:пить|воду)|можно\s+пить|можно\s+употреблять|"
+                    r"прозрачн\w*\s+жидк|clear\s+liquid|drink\s+up\s+to|can\s+drink|allowed\s+to\s+drink|may\s+drink",
+                    evidence_text, re.I
+                ))
+                checks.append(evidence_allows)
+            else:
+                evidence_restricts = bool(re.search(
+                    r"не\s+пить|нельзя\s+пить|запрещ\w*\s+пить|огранич\w*[^.!?\n]{0,30}жидк|"
+                    r"do\s+not\s+drink|no\s+liquids|nothing\s+by\s+mouth|nil\s+by\s+mouth",
+                    evidence_text, re.I
+                ))
+                checks.append(evidence_restricts)
+
+        lifestyle_rules = (
+            (r"алкогол\w*", r"исключ\w*|избег\w*|не\s+употреб\w*|воздерж\w*|запрещ\w*|нельзя|avoid|abstain|do\s+not\s+drink|limit"),
+            (r"курени\w*|курить|smok(?:e|ing)", r"отказ\w*|избег\w*|не\s+кур\w*|воздерж\w*|запрещ\w*|нельзя|avoid|abstain|do\s+not\s+smok|stop\s+smoking"),
+            (r"физическ\w*\s+нагрузк\w*|physical\s+activity|exercise", r"избег\w*|огранич\w*|уменьш\w*|запрещ\w*|нельзя|avoid|limit|reduce|strenuous"),
+            (r"жирн\w*\s+пищ\w*|fatty\s+food|диет\w*|diet", r"исключ\w*|огранич\w*|избег\w*|запрещ\w*|нельзя|avoid|limit|restrict|reduce|fatty\s+food"),
+        )
+        for topic_pattern, action_pattern in lifestyle_rules:
+            if re.search(topic_pattern, claim_text, re.I) and re.search(action_pattern, claim_text, re.I):
+                checks.append(bool(
+                    re.search(topic_pattern, evidence_text, re.I)
+                    and re.search(action_pattern, evidence_text, re.I)
+                ))
+
+        return all(checks) if checks else True
+
+    @staticmethod
+    def _monetary_facts(text: str) -> set[tuple[str, ...]]:
+        """Extract explicit currency amounts/ranges for price-query grounding checks."""
+        value = (text or "").replace("\u00a0", " ")
+        currency = r"(?:₽|руб(?:лей|ля|ль)?\.?|RUB|€|евро|EUR|\$|USD|доллар\w*)"
+        number = r"\d(?:[\d ]*\d)?(?:[.,]\d+)?"
+
+        def norm_amount(raw: str) -> str:
+            return re.sub(r"\s+", "", raw).replace(",", ".")
+
+        def norm_currency(raw: str) -> str:
+            lowered = raw.casefold().rstrip(".")
+            if lowered in {"₽", "руб", "рубль", "рубля", "рублей", "rub"}:
+                return "RUB"
+            if lowered in {"€", "евро", "eur"}:
+                return "EUR"
+            if lowered in {"$", "usd"} or lowered.startswith("доллар"):
+                return "USD"
+            return lowered.upper()
+
+        facts: set[tuple[str, ...]] = set()
+        occupied: list[tuple[int, int]] = []
+        range_pattern = re.compile(
+            rf"(?P<first>{number})\s*(?:[-–—]|\bдо\b|\bto\b)\s*"
+            rf"(?P<second>{number})\s*(?P<currency>{currency})", re.I
+        )
+        for match in range_pattern.finditer(value):
+            first = norm_amount(match.group("first"))
+            second = norm_amount(match.group("second"))
+            cur = norm_currency(match.group("currency"))
+            facts.add(("range", first, second, cur))
+            # An endpoint can be used as a quoted price only if the model doesn't imply
+            # that the range itself was a single fixed price.
+            facts.add(("amount", first, cur))
+            facts.add(("amount", second, cur))
+            occupied.append(match.span())
+
+        amount_pattern = re.compile(rf"(?P<amount>{number})\s*(?P<currency>{currency})", re.I)
+        for match in amount_pattern.finditer(value):
+            if any(start <= match.start() < end for start, end in occupied):
+                continue
+            facts.add(("amount", norm_amount(match.group("amount")), norm_currency(match.group("currency"))))
+        return facts
+
+    @classmethod
+    def _safe_unverified_medical_fallback(cls, question: str) -> str:
+        """Provide conservative next steps when no specific clinical claim can be sourced."""
+        value = (question or "").casefold().replace("ё", "е")
+        gastroscopy = bool(re.search(r"гастроскоп|фгдс|gastroscop|upper endoscop", value))
+        blood_test = bool(re.search(r"анализ\w*\s+кров\w*|забор\w*\s+кров\w*|\bоак\b|\bcbc\b|биохим", value))
+        contraindications = bool(re.search(r"противопоказ|ограничени|contraindication|restriction", value))
+        preparation = bool(re.search(r"подготов|натощак|перед\s+(?:сдач|анализ|процедур|исследован)|prepar|fasting", value))
+        price = bool(re.search(r"стоимост|цен\w*|сколько\s+(?:это\s+)?стоит|price|cost|fee", value))
+
+        if price and gastroscopy:
+            return (
+                "В доступных материалах не найден подтверждённый тариф или диапазон стоимости гастроскопии. "
+                "Уточните актуальную цену в клинике и отдельно спросите, включена ли седация/анестезия."
+            )
+        if price and blood_test:
+            return (
+                "В доступных материалах не найден подтверждённый тариф на этот анализ. "
+                "Уточните актуальную стоимость в лаборатории и проверьте, какие показатели входят в выбранный профиль."
+            )
+        if price:
+            return (
+                "В доступных материалах не найден подтверждённый тариф или диапазон стоимости. "
+                "Уточните актуальную цену у клиники или лаборатории, оказывающей эту услугу."
+            )
+
+        if gastroscopy and contraindications:
+            return (
+                "Перед записью сообщите эндоскопическому кабинету о хронических заболеваниях, аллергиях и "
+                "всех принимаемых лекарствах. Возможность и условия проведения гастроскопии должен оценить "
+                "медицинский специалист; без подтверждённого источника я не буду перечислять конкретные "
+                "состояния как противопоказания."
+            )
+        if gastroscopy and preparation:
+            return (
+                "Перед гастроскопией уточните в эндоскопическом кабинете правила приёма пищи и жидкости, "
+                "а также порядок приёма назначенных лекарств. Не меняйте и не отменяйте препараты самостоятельно: "
+                "конкретные инструкции нужно подтвердить у клиники, где будет проводиться исследование."
+            )
+        if blood_test and preparation:
+            return (
+                "Требования к подготовке зависят от вида анализа и назначенных показателей. Уточните в лаборатории, "
+                "нужно ли приходить натощак и как поступить с назначенными лекарствами; не отменяйте препараты "
+                "самостоятельно."
+            )
+        if contraindications:
+            return (
+                "Конкретные противопоказания зависят от процедуры и состояния пациента. Сообщите ответственному "
+                "медицинскому специалисту о заболеваниях, аллергиях и принимаемых лекарствах; не буду приписывать "
+                "неподтверждённому источнику конкретный перечень ограничений."
+            )
+        return (
+            "По доступным материалам не удалось подтвердить конкретные медицинские детали. Уточните требования "
+            "у специалиста, который назначил исследование, или в медицинском учреждении, где оно будет проводиться."
+        )
+
+    @classmethod
+    def _sanitize_unverified_medical_draft(
+        cls,
+        question: str,
+        draft: str,
+        sources: list[dict[str, Any]],
+        source_evidence: dict[str, str] | None = None,
+    ) -> str:
+        """Strip high-risk clinical specifics from a draft unless the same cited evidence supports them.
+
+        Search-result pages are not by themselves proof that every medical assertion is correct.
+        This conservative pass is used only for fallback/failed validation paths.
+        """
+        text = draft or ""
+        # The API diagnostics carry validation status. Keep the visible answer concise and
+        # let the single canonical source appendix carry links; don't repeat warning banners.
+        text = re.split(
+            r"(?im)^\s*#{1,6}\s*что не удалось над[её]жно подтвердить\b",
+            text,
+            maxsplit=1,
+        )[0]
+        text = re.split(
+            r"(?im)^\s*(?:#{1,6}\s*)?(?:источники\b|поисковые ссылки для самостоятельной проверки\b|"
+            r"\*\*над[её]жность ответа:\*\*)[^\n]*",
+            text,
+            maxsplit=1,
+        )[0]
+        text = re.sub(
+            r"(?im)^\s*(?:[-*+]\s*)?(?:неподтвержд[её]нн\w*\s+ответ|"
+            r"не\s+подтвержд[её]нн\w*\s+текущим поиском\s+информац\w*)\s*:\s*",
+            "",
+            text,
+        )
+        if not text.strip():
+            return cls._safe_unverified_medical_fallback(question)
+
+        source_map: dict[str, dict[str, Any]] = {}
+        for source in sources:
+            citation = str(source.get("citation") or "").strip()
+            if citation:
+                source_map[citation] = source
+        evidence_map = source_evidence or {}
+        any_evidence = "\n".join(str(value) for value in evidence_map.values()).strip()
+        if not any_evidence:
+            any_evidence = "\n".join(
+                " ".join(str(source.get(key) or "") for key in ("title", "section", "path", "snippet"))
+                for source in sources
+            ).strip()
+        if not any_evidence:
+            return cls._safe_unverified_medical_fallback(question)
+
+        kept: list[str] = []
+        normalized_question = question.casefold().replace("ё", "е")
+        asks_preparation = bool(re.search(
+            r"подготов|натощак|перед\s+(?:сдач|анализ|процедур|исследован)|prepar|fasting",
+            normalized_question,
+        ))
+        asks_contraindications = bool(re.search(
+            r"противопоказ|ограничени|contraindication|restriction", normalized_question
+        ))
+
+        condition_checks = (
+            (r"остр\w*[^.!?\n]{0,35}инфекц\w*|acute\s+infect\w*", r"остр\w*[^.!?\n]{0,35}инфекц\w*|acute\s+infect\w*"),
+            (r"воспалительн\w*\s+процесс\w*|inflammator\w*\s+process", r"воспалительн\w*\s+процесс\w*|inflammator\w*\s+process"),
+            (r"сердечно[- ]сосудист\w*|cardiovascular|heart\s+failure|сердечн\w*\s+недостаточн\w*", r"сердечно[- ]сосудист\w*|cardiovascular|heart\s+failure|сердечн\w*\s+недостаточн\w*"),
+            (r"декомпенсац\w*|decompensat\w*", r"декомпенсац\w*|decompensat\w*"),
+            (r"остр\w*\s+болев\w*\s+синдром\w*|сильн\w*\s+бол\w*\s+в\s+живот\w*|acute\s+pain", r"остр\w*\s+болев\w*\s+синдром\w*|сильн\w*\s+бол\w*\s+в\s+живот\w*|acute\s+pain"),
+            (r"язвенн\w*\s+болезн\w*|peptic\s+ulcer", r"язвенн\w*\s+болезн\w*|peptic\s+ulcer"),
+            (r"психическ\w*\s+расстройств\w*|психоз\w*|psychiatric\s+disorder|psychosis", r"психическ\w*\s+расстройств\w*|психоз\w*|psychiatric\s+disorder|psychosis"),
+            (r"аллерги\w*[^.!?\n]{0,70}(?:анестетик\w*|седатив\w*|обезболива\w*|anaesthe\w*|anesthe\w*|sedative\w*)", r"аллерги\w*[^.!?\n]{0,70}(?:анестетик\w*|седатив\w*|обезболива\w*|anaesthe\w*|anesthe\w*|sedative\w*)"),
+            (r"гипертензи\w*|гипертони\w*|hypertension|высок\w*\s+артериальн\w*\s+давлен", r"гипертензи\w*|гипертони\w*|hypertension|высок\w*\s+артериальн\w*\s+давлен"),
+            (r"антикоагулянт\w*|нарушен\w*\s+свертыва\w*|нарушен\w*\s+свёртыва\w*|anticoagulan\w*|coagulation\s+disorder", r"антикоагулянт\w*|нарушен\w*\s+свертыва\w*|нарушен\w*\s+свёртыва\w*|anticoagulan\w*|coagulation\s+disorder"),
+        )
+
+        for raw_line in text.splitlines():
+            stripped = raw_line.strip()
+            if not stripped:
+                kept.append("")
+                continue
+            claim_line = re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s*)", "", stripped)
+            claim_line = re.sub(r"\*\*(.*?)\*\*", r"\1", claim_line)
+            claim_without_cites = re.sub(r"\[(?:W|WEB)\d+\]", "", claim_line).strip()
+            line_citations = list(dict.fromkeys(re.findall(r"\[(?:W|WEB)\d+\]", stripped)))
+            if line_citations:
+                line_evidence_parts = [
+                    evidence_map[citation] for citation in line_citations if citation in evidence_map
+                ]
+                if not line_evidence_parts:
+                    line_evidence_parts = [
+                        " ".join(str(source_map[citation].get(key) or "")
+                                  for key in ("title", "section", "path", "snippet"))
+                        for citation in line_citations if citation in source_map
+                    ]
+                line_evidence = "\n".join(line_evidence_parts).casefold().replace("ё", "е")
+            else:
+                # Medical specifics without a citation must not borrow evidence from an
+                # unrelated source elsewhere in the prompt. The caller can still fall back
+                # to a conservative generic response and list available sources at the end.
+                line_evidence = ""
+
+            remove_line = False
+            claim_numeric_facts = cls._numeric_clinical_facts(claim_without_cites)
+            price_intent = bool(re.search(
+                r"стоимост\w*|цен\w*|сколько\s+(?:это\s+)?стоит|price|cost|fee",
+                normalized_question, re.I,
+            ))
+            if price_intent:
+                claim_money = cls._monetary_facts(claim_without_cites)
+                evidence_money = cls._monetary_facts(line_evidence)
+                if any(fact not in evidence_money for fact in claim_money):
+                    remove_line = True
+                if re.search(r"диапазон\w* цен|пример\w* диапазон\w* цен|price range", claim_without_cites, re.I) and not claim_money:
+                    remove_line = True
+            if claim_numeric_facts:
+                evidence_numeric_facts = cls._numeric_clinical_facts(line_evidence)
+                if any(
+                    not cls._numeric_fact_is_supported(fact, evidence_numeric_facts)
+                    for fact in claim_numeric_facts
+                ):
+                    remove_line = True
+
+            if asks_preparation and re.search(
+                r"натощак|голодан\w*|не\s+(?:принимать|употреблять)\s+пищ\w*|нельзя\s+есть|"
+                r"прекратить\s+при[её]м\s+пищ\w*|пуст\w*\s+желуд\w*|fasting|avoid\s+food|do\s+not\s+eat|"
+                r"не\s+пить|огранич\w*\s+(?:при[её]м\s+)?жидк|разреш\w*\s+(?:пить|воду)|"
+                r"прозрачн\w*\s+жидк|clear\s+liquid|drink\s+up\s+to|алкогол\w*|курени\w*|курить|"
+                r"физическ\w*\s+нагрузк|жирн\w*\s+пищ|smok(?:e|ing)|alcohol|fatty\s+food",
+                claim_without_cites,
+                re.I,
+            ):
+                prep_evidence = bool(re.search(
+                    r"натощак|голодан\w*|fasting|fast\s+for|пищ\w*|ед\w*|food|eat|meal|drink|water|liquid|"
+                    r"алкогол\w*|курени\w*|курить|нагрузк|жирн\w*|alcohol|smok|activity|fatty|diet",
+                    line_evidence,
+                    re.I,
+                ))
+                if not prep_evidence or not cls._medical_preparation_instruction_supported(
+                    claim_without_cites, line_evidence
+                ):
+                    remove_line = True
+
+            if re.search(r"\bне\s+(?:отмен\w*|прекрат\w*|пропуст\w*|меня\w*|измен\w*|уменьш\w*|увелич\w*)", claim_without_cites, re.I):
+                pass  # Prevent unsafe-looking regex matches on cautious negative advice.
+            elif re.search(
+                r"(?:отмен\w*|прекрат\w*|пропуст\w*|приостанов\w*|уменьш\w*|увелич\w*|измен\w*|"
+                r"не\s+принимать|не\s+принимайте|stop|hold|withhold|adjust|reduce|increase)"
+                r"[^.!?\n]{0,100}(?:лекарств\w*|препарат\w*|таблет\w*|антикоагулянт\w*|"
+                r"варфарин|аспирин|medication\w*|drug\w*|anticoagulan\w*|warfarin|aspirin)",
+                claim_without_cites,
+                re.I,
+            ):
+                has_medication_action_evidence = bool(
+                    re.search(r"лекарств\w*|препарат\w*|таблет\w*|антикоагулянт\w*|варфарин|аспирин|medication|drug|anticoagulan|warfarin|aspirin", line_evidence, re.I)
+                    and re.search(r"отмен\w*|прекрат\w*|пропуст\w*|приостанов\w*|уменьш\w*|увелич\w*|измен\w*|не\s+принимать|не\s+принимайте|stop|hold|withhold|adjust|reduce|increase", line_evidence, re.I)
+                )
+                if not has_medication_action_evidence:
+                    remove_line = True
+
+            if asks_contraindications:
+                condition_relation_evidence = bool(re.search(
+                    r"противопоказан\w*|противопоказани\w*|contraindicat\w*|риск\w*|risk\w*|"
+                    r"отлож\w*|отсроч\w*|postpone|defer|не\s+рекоменд\w*|not\s+recommended|"
+                    r"should\s+not\s+proceed|оценить\w*[^.!?\n]{0,60}риск\w*|assess[^.!?\n]{0,60}risk",
+                    line_evidence, re.I,
+                ))
+                for claim_pattern, evidence_pattern in condition_checks:
+                    if re.search(claim_pattern, claim_without_cites, re.I) and (
+                        not re.search(evidence_pattern, line_evidence, re.I) or not condition_relation_evidence
+                    ):
+                        remove_line = True
+                        break
+                if re.search(r"письменн\w*\s+(?:рекомендац\w*|направлен\w*)", claim_without_cites, re.I) and not re.search(
+                    r"письменн\w*\s+(?:рекомендац\w*|направлен\w*)", line_evidence, re.I
+                ):
+                    remove_line = True
+
+            if remove_line:
+                continue
+            kept.append(raw_line)
+
+        cleaned = cls._clean_unverified_draft("\n".join(kept))
+        cleaned = cls._remove_empty_answer_sections(cleaned)
+        # Empty source citations or an answer consisting only of headings is not useful.
+        factual_lines = [
+            line for line in cleaned.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+            and not re.match(r"^\s*(?:[-*+]\s*)?$", line)
+        ]
+        price_intent = bool(re.search(
+            r"стоимост\w*|цен\w*|сколько\s+(?:это\s+)?стоит|price|cost|fee",
+            normalized_question, re.I,
+        ))
+        # A price answer without a confirmed amount should not leave vague prose or an
+        # empty promise like "пример диапазона цен"; use a direct no-tariff fallback.
+        if not factual_lines or (price_intent and not cls._monetary_facts(cleaned)):
+            return cls._safe_unverified_medical_fallback(question)
+        return cleaned
+
+
     @classmethod
     def _answer_content_issues(
         cls,
@@ -1792,6 +2298,35 @@ class RagService:
                     break
         return supported
 
+    @staticmethod
+    def _medical_marker_terms(text: str) -> set[str]:
+        """Return a small set of distinctive laboratory analyte markers.
+
+        Table rows often contain only the analyte name and abbreviation (for example,
+        "Лейкоциты (WBC)") while the generated claim adds a generic descriptor such as
+        "количество". Requiring two lexical overlaps incorrectly suppresses that
+        directly supported claim. This narrow allow-list does not generalize to
+        unrelated medical or administrative claims.
+        """
+        value = str(text or "").casefold().replace("ё", "е")
+        markers = {
+            "лейкоцит": r"\bлейкоцит\w*\b|\bwbc\b",
+            "эритроцит": r"\bэритроцит\w*\b|\brbc\b",
+            "тромбоцит": r"\bтромбоцит\w*\b|\bplt\b",
+            "гемоглобин": r"\bгемоглобин\w*\b|\bhgb\b|\bhb\b",
+            "гематокрит": r"\bгематокрит\w*\b|\bhct\b",
+            "соэ": r"\bсоэ\b",
+            "mcv": r"\bmcv\b",
+            "mch": r"\bmch\b",
+            "mchc": r"\bmchc\b",
+            "rdw": r"\brdw(?:-cv|-sd)?\b",
+            "pdw": r"\bpdw\b",
+            "mpv": r"\bmpv\b",
+            "p-lcr": r"\bp-lcr\b",
+            "pct": r"\bpct\b",
+        }
+        return {marker for marker, pattern in markers.items() if re.search(pattern, value)}
+
     @classmethod
     def _attribute_answer_to_sources(
         cls, answer: str, sources: list[dict[str, Any]]
@@ -1808,9 +2343,15 @@ class RagService:
         cleaned = re.sub(r"\s+([,.!?;:])", r"\1", cleaned)
         source_records: list[tuple[dict[str, Any], set[str], set[str]]] = []
         for source in sources:
-            body = " ".join(str(source.get(key) or "") for key in ("snippet", "section", "title", "path", "url"))
+            evidence_text = str(source.get("_internal_evidence_text") or source.get("snippet") or "")
+            body = " ".join((
+                evidence_text, str(source.get("section") or ""), str(source.get("title") or ""),
+                str(source.get("path") or ""), str(source.get("url") or ""),
+            ))
             claim_terms = cls._claim_terms(body)
-            body_terms = cls._claim_terms(str(source.get("snippet") or ""))
+            # Crucially, attribution uses the complete indexed chunk, not the shortened
+            # 700-character source preview returned to the UI.
+            body_terms = cls._claim_terms(evidence_text)
             source_records.append((source, claim_terms, body_terms))
 
         output_lines: list[str] = []
@@ -1870,7 +2411,7 @@ class RagService:
             scored: list[tuple[float, dict[str, Any]]] = []
             claim_numbers = cls._numeric_values(claim_text)
             for source, source_terms, body_terms in source_records:
-                source_body = str(source.get("snippet") or "")
+                source_body = str(source.get("_internal_evidence_text") or source.get("snippet") or "")
                 # Do not treat a merely related source as support for a stronger rule.
                 # Example: "натощак ИЛИ не менее 4 часов после еды" does not support
                 # "категорически запрещено есть".
@@ -1904,24 +2445,44 @@ class RagService:
                 # Place names alone must not let a parking-only page support a dining claim.
                 if is_dining_claim and not re.search(
                     r"кафе|ресторан\w*|фудкорт\w*|столов\w*|кофейн\w*|питани\w*|food|restaurant\w*|cafe|coffee",
-                    str(source.get("snippet") or ""), re.IGNORECASE,
+                    str(source.get("_internal_evidence_text") or source.get("snippet") or ""), re.IGNORECASE,
                 ):
                     continue
                 if is_parking_claim and not re.search(
-                    r"парков\w*|паркинг|parking", str(source.get("snippet") or ""), re.IGNORECASE
+                    r"парков\w*|паркинг|parking", str(source.get("_internal_evidence_text") or source.get("snippet") or ""), re.IGNORECASE
                 ):
                     continue
-                if len(overlap) < 2 and not named_place_match:
+                direct_medical_marker_match = bool(
+                    cls._medical_marker_terms(claim_text)
+                    & cls._medical_marker_terms(source_body)
+                )
+                if len(overlap) < 2 and not named_place_match and not direct_medical_marker_match:
                     continue
                 # Metadata/title overlap alone is not enough. Require multiple
                 # answer-bearing terms in the actual snippet, especially for a
-                # paragraph that may bundle several factual claims together.
+                # paragraph that may bundle several factual claims together. A direct
+                # match on a distinctive analyte name/acronym is a narrow exception.
                 minimum_body_overlap = 2 if len(terms) < 6 else 3
-                if len(body_overlap) < minimum_body_overlap and not named_place_match:
+                if (
+                    len(body_overlap) < minimum_body_overlap
+                    and not named_place_match
+                    and not direct_medical_marker_match
+                ):
                     continue
                 coverage = len(overlap) / max(2, min(len(terms), 8))
                 body_coverage = len(body_overlap) / max(2, min(len(terms), 8))
                 score = 0.55 * coverage + 0.45 * body_coverage
+                if direct_medical_marker_match and not re.search(
+                    r"повыш\w*|снижен\w*|увелич\w*|уменьш\w*|выше|ниже|нарушен\w*|"
+                    r"патолог\w*|норм\w*|указыв\w*|свидетельств\w*|диагностир\w*",
+                    claim_text,
+                    re.IGNORECASE,
+                ):
+                    # A bare analyte/list item may be represented by one exact marker
+                    # in a table row. This does not authorize claims about abnormality,
+                    # interpretation, diagnosis or patient-specific meaning.
+                    score = max(score, 0.55)
+                    body_coverage = max(body_coverage, 0.5)
                 if named_place_match:
                     score = max(score, 0.68)
                     body_coverage = max(body_coverage, 0.5)
@@ -1983,11 +2544,9 @@ class RagService:
             for source_id in claim.get("source_ids", [])
         }
         for aspect in aspects:
-            supported_sources = []
+            candidate_sources: list[dict[str, Any]] = []
+            supported_sources: list[str] = []
             for source in sources:
-                source_id = str(source.get("source_id"))
-                if source_id not in supported_claim_source_ids:
-                    continue
                 mapped_aspects = [str(value) for value in (source.get("matched_query_aspects") or [])]
                 if aspect not in mapped_aspects:
                     continue
@@ -2000,22 +2559,57 @@ class RagService:
                     title=str(source.get("title") or ""),
                     path=str(source.get("path") or ""),
                     section=str(source.get("section") or ""),
-                    content=str(source.get("snippet") or ""),
+                    content=str(source.get("_internal_evidence_text") or source.get("snippet") or ""),
                 ) is not None:
                     continue
-                supported_sources.append(source_id)
+                candidate_sources.append(source)
+                source_id = str(source.get("source_id"))
+                if source_id in supported_claim_source_ids:
+                    supported_sources.append(source_id)
+            supported_claims = [
+                claim for claim in claim_audit
+                if claim.get("supported") and any(
+                    str(source_id) in supported_sources
+                    for source_id in claim.get("source_ids", [])
+                )
+            ]
+            candidate_source_ids = [str(source.get("source_id")) for source in candidate_sources]
+            unsupported_candidate_ids = [
+                source_id for source_id in candidate_source_ids
+                if source_id not in set(supported_sources)
+            ]
+            wiki_available = any(source.get("source_type") == "wiki" for source in candidate_sources)
+            web_available = any(source.get("source_type") == "web" for source in candidate_sources)
+            if supported_sources:
+                coverage_level = "some_supported_claims"
+                coverage_status = "answer_has_source_backed_claims"
+            elif candidate_sources:
+                coverage_level = "evidence_without_supported_claims"
+                coverage_status = "evidence_found_but_not_attributed"
+            else:
+                coverage_level = "no_supported_claims"
+                coverage_status = "no_eligible_evidence"
             coverage.append({
                 "query": aspect,
+                # Backward-compatible alias: this means at least one supported claim
+                # exists for the aspect, not that every possible detail was answered.
                 "covered": bool(supported_sources),
+                "coverage_status": coverage_status,
+                "coverage_level": coverage_level,
+                "coverage_scope": "claim_presence_not_answer_completeness",
+                "completeness_assessed": False,
+                "completeness_note": (
+                    "Проверка различает наличие материала и привязку тезисов к нему, "
+                    "но не доказывает полноту ответа относительно всей Wiki. Полноту "
+                    "ожидаемых фактов проверяет Golden Set."
+                ),
+                "candidate_source_ids": candidate_source_ids,
+                "unattributed_candidate_source_ids": unsupported_candidate_ids,
                 "supporting_source_ids": supported_sources,
-                "wiki_evidence_available": any(
-                    source.get("source_type") == "wiki" and aspect in (source.get("matched_query_aspects") or [])
-                    for source in sources
-                ),
-                "web_evidence_available": any(
-                    source.get("source_type") == "web" and aspect in (source.get("matched_query_aspects") or [])
-                    for source in sources
-                ),
+                "supported_claim_count": len(supported_claims),
+                "supported_claims": [str(claim.get("claim") or "") for claim in supported_claims],
+                "wiki_evidence_available": wiki_available,
+                "web_evidence_available": web_available,
             })
         return coverage
 
@@ -2577,6 +3171,7 @@ class RagService:
             blocks.append(
                 f"[Wiki-Источник W{idx}]\nНазвание: {doc['title']}\nПуть: {doc['wiki_path']}\n"
                 f"Раздел: {doc['section'] or 'Корень статьи'}\n"
+                f"Тип фрагмента: {'дополнительные сведения той же Wiki-статьи (код услуги/порядок записи); используй только для соответствующего аспекта' if doc.get('supplemental_context') else 'основной фрагмент'}\n"
                 f"Найден для аспекта: {', '.join(doc.get('_matched_query_aspects') or [retrieval_question])}\n"
                 f"Фрагмент:\n{doc['content']}"
             )
@@ -2705,6 +3300,8 @@ class RagService:
             + "5. По умолчанию оформляй ответ короткими маркированными пунктами: обычно 3–7 пунктов, одна мысль на пункт; для последовательности действий используй нумерованный список. Для простого вопроса достаточно 2–4 пунктов.\n"
             + "6. Если вопрос охватывает несколько аспектов или документов, создай отдельный короткий подраздел для каждого аспекта и объединяй сведения из всех подходящих источников; не отдавай приоритет одному документу только потому, что он оказался первым. Не смешивай разные филиалы и условия.\n"
             + "7. Если спрашивают, к какому врачу можно записаться или обратиться за консультацией, ищи в переданных материалах разделы о распределении записи/консультативных приёмах и перечисляй имена специалистов, которые указаны там. Общее описание специальности не заменяет сведения о конкретных врачах.\n"
+            + "8. Для вопросов об услуге или лабораторном исследовании проверь все переданные фрагменты соответствующей Wiki-страницы: при наличии в источниках укажи код и название услуги, способ/место забора или выполнения, подготовку, срок, а также важные ограничения и порядок записи. Не считай первый найденный фрагмент полной статьёй; не добавляй отсутствующие сведения.\n"
+            + "9. Если вопрос прямо просит состав анализа/перечень показателей, перечисли все показатели из соответствующей таблицы, а не выборочную часть. Если таблица или одна статья разбита на несколько переданных фрагментов, объедини строки этих фрагментов и проверь, что не пропущены показатели и коды. Число показателей называй только если оно явно указано в источнике или однозначно следует из полного списка строк. Используй названия из Wiki и не добавляй собственные определения в скобках.\n"
             + "\n".join(f"- {item}" for item in RagService._answer_quality_requirements(question))
         )
 
@@ -2734,9 +3331,11 @@ class RagService:
                 ).as_dict(),
                 "answerability_score": doc.get("answerability_score"),
                 "answerability_reason": doc.get("answerability_reason"),
+                "_internal_evidence_text": str(doc.get("content") or ""),
+                "supplemental_context": bool(doc.get("supplemental_context", False)),
                 "matched_query_aspects": doc.get("_matched_query_aspects") or [question],
                 "relevance_query_aspect": doc.get("_relevance_query_aspect"),
-                "document_id": str(doc["document_id"]), # F Для модалки
+                "document_id": str(doc["document_id"]),
             })
         for idx, result in enumerate(web_results, start=1):
             matched_aspects = (web_result_aspects or {}).get(result.url.rstrip("/").casefold(), []) or [question]
@@ -3343,9 +3942,24 @@ class RagService:
             "issue_details": {"initial": [], "reviewed": [], "repaired": [], "final": []},
             "claim_attribution": claim_audit,
             "facet_coverage": facet_coverage,
+            "answer_completeness": {
+                "status": "not_assessed",
+                "reason": (
+                    "Runtime-проверка подтверждает привязку утверждений к источникам и наличие "
+                    "поддержанного тезиса по аспекту, но не сравнивает ответ со всеми ожидаемыми фактами. "
+                    "Полнота измеряется отдельным Golden Set evaluator."
+                ),
+                "evaluation_owner": "golden_set",
+            },
         })
         review_diagnostics["used_source_ids"] = [str(source.get("source_id")) for source in used_sources]
         review_diagnostics["source_ids"] = [str(source.get("source_id")) for source in response_sources]
+        # Full chunk text is used only inside attribution/coverage checks; the API and
+        # conversation memory expose the bounded source preview instead.
+        response_sources = [
+            {key: value for key, value in source.items() if not key.startswith("_internal_")}
+            for source in response_sources
+        ]
         self.memory.add_message(conversation_id, "assistant", answer, query_id=query_id, sources=response_sources)
         # Long-term chat memory remains persistent. LLM-generated summaries are disabled
         # by default to avoid surprise model calls every few turns (can be opted in).

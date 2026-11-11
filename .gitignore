@@ -41,3 +41,6 @@ env/
 .ruff_cache/
 
 check.ipynb
+
+# Evaluation reports (AImed)
+reports/

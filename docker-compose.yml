@@ -61,5 +61,6 @@ services:
     volumes:
       - ./searxng:/etc/searxng:rw
 
+
 volumes:
   medtrust_pgdata:

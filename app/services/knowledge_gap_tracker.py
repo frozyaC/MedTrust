@@ -1,12 +1,23 @@
+"""Persist MedTrust knowledge-gap topics without auto-merging semantic matches.
+
+Exact duplicate questions continue to use a SHA-256 fingerprint. Distinct
+questions always retain separate gap and cluster identities; vector similarity
+is only a suggestion signal. Owner-confirmed groups are managed separately.
+"""
+from __future__ import annotations
+
+import argparse
 import hashlib
 import logging
 import os
 import re
-from typing import Any
-
-
+import uuid
+from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
+
+# PostgreSQL advisory lock shared by all workers modifying the cluster index.
+_CLUSTER_LOCK_KEY = 741_092_611
 
 
 def _database_url() -> str | None:
@@ -20,13 +31,71 @@ def _database_url() -> str | None:
     return os.getenv("DATABASE_URL") or os.getenv("DATABASE_DSN")
 
 
+def _privacy_safe_query(value: str) -> str:
+    """Remove common direct identifiers before embedding or gap-table storage.
+
+    The original registrar question remains in conversation_query_context; the
+    semantic index only receives a de-identified topic string.
+    """
+    text = (value or "")[:4000]
+    patterns = (
+        (r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[email]"),
+        (r"\b\d{3}-\d{3}-\d{3}\s?\d{2}\b", "[identifier]"),
+        (r"\b\d{4}\s?\d{6}\b", "[document]"),
+        (r"\b(?:дата\s+рождения|родил(?:ся|ась)|д\.?р\.?)[^,;.!?]{0,30}\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", "[date_of_birth]"),
+        (r"\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}\b", "[date]"),
+        (r"(?i)\b(?:пациент(?:ка)?|больной|больная)\s+[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2}", "пациент [ФИО]"),
+        (r"(?i)\bфио\s*[:：]\s*[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+){1,2}", "ФИО: [скрыто]"),
+        (r"(?<!\d)(?:\+?\d[\s().-]*){10,15}(?!\d)", "[phone]"),
+    )
+    for pattern, replacement in patterns:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
 def _normalise(value: str) -> str:
     value = (value or "").casefold().replace("ё", "е")
     value = re.sub(r"[^a-zа-я0-9]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _fingerprint(normalized_query: str) -> str:
+    return hashlib.sha256(normalized_query.encode("utf-8")).hexdigest()
+
+
+def _similarity_action(
+    similarity: float,
+    *,
+    auto_threshold: float = 0.90,
+    review_threshold: float = 0.80,
+) -> str:
+    """Return a review suggestion for similar questions; never merge by vectors."""
+    if similarity >= review_threshold:
+        return "review"
+    return "new"
+
+
+def _updated_centroid(
+    old_embedding: Iterable[float],
+    new_embedding: Iterable[float],
+    old_weight: int,
+    new_weight: int = 1,
+) -> list[float]:
+    """Incremental weighted mean of cluster centroids."""
+    old = [float(value) for value in old_embedding]
+    new = [float(value) for value in new_embedding]
+    if not old or len(old) != len(new):
+        raise ValueError("Embedding dimensions do not match")
+    if old_weight < 1:
+        return new
+    if new_weight < 1:
+        raise ValueError("new_weight must be positive")
+    denominator = old_weight + new_weight
+    return [((left * old_weight) + (right * new_weight)) / denominator for left, right in zip(old, new)]
+
+
 _ENSURE_SQL = (
+    "CREATE EXTENSION IF NOT EXISTS vector",
     """
     CREATE TABLE IF NOT EXISTS knowledge_gaps (
         id BIGSERIAL PRIMARY KEY,
@@ -56,7 +125,6 @@ _ENSURE_SQL = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS knowledge_gap_comments_gap_idx ON knowledge_gap_comments (gap_id, created_at)",
-    # Отзывы пишет /feedback; таблица может ещё не существовать, если отзывов не было
     """
     CREATE TABLE IF NOT EXISTS query_feedback (
         id UUID PRIMARY KEY,
@@ -68,22 +136,63 @@ _ENSURE_SQL = (
     """,
 )
 
-# save_feedback хранит комментарий как "[reason_code] текст"
-_FEEDBACK_COMMENT_RE = re.compile(r"^\[([a-z_]+)\]\s*(.*)$", re.DOTALL)
-
 GAP_STATUSES = {"open", "in_review", "resolved", "dismissed"}
-# Причины, создающие пробел; совпадает с createsGap в frontend/src/data/feedbackReasons.ts
 GAP_REASON_CODES = {"no_knowledge_base_answer", "knowledge_incomplete", "knowledge_outdated"}
 
 
 def _ensure_schema(cur: Any) -> None:
+    """Idempotent, lazy migration so existing installations are upgraded safely."""
     for statement in _ENSURE_SQL:
         cur.execute(statement)
+
+    from app.core.config import get_settings
+
+    dimension = int(get_settings().embedding_dimension)
+    if dimension <= 0:
+        raise ValueError("embedding_dimension must be positive")
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS knowledge_gap_clusters (
+            id UUID PRIMARY KEY,
+            canonical_question TEXT NOT NULL,
+            normalized_question TEXT NOT NULL,
+            embedding VECTOR({dimension}),
+            occurrence_count INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    cur.execute(
+        f"ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS embedding VECTOR({dimension})"
+    )
+    cur.execute("ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS cluster_id UUID NULL")
+    cur.execute("ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS suggested_cluster_id UUID NULL")
+    cur.execute("ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS similarity_score DOUBLE PRECISION NULL")
+    cur.execute(
+        "ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS cluster_match_type TEXT NOT NULL DEFAULT 'unassigned'"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS knowledge_gaps_cluster_id_idx ON knowledge_gaps(cluster_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS knowledge_gaps_suggested_cluster_idx ON knowledge_gaps(suggested_cluster_id)"
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS knowledge_gaps_embedding_hnsw
+        ON knowledge_gaps USING hnsw (embedding vector_cosine_ops)
+        WHERE embedding IS NOT NULL AND cluster_id IS NOT NULL
+        """
+    )
 
 
 def _reason_code(reason: str) -> str:
     code = (reason or "").removeprefix("user_feedback:")
     return code if code in GAP_REASON_CODES else "no_knowledge_base_answer"
+
+# save_feedback хранит комментарий как "[reason_code] текст"
+_FEEDBACK_COMMENT_RE = re.compile(r"^\[([a-z_]+)\]\s*(.*)$", re.DOTALL)
 
 
 def _feedback_view(feedback_id: Any, rating: str, raw_comment: str | None) -> dict[str, Any]:
@@ -120,12 +229,182 @@ def _insert_comment(cur: Any, gap_id: int, author: str, body: str) -> dict[str, 
     )
     return _comment_view(cur.fetchone())
 
-
 class KnowledgeGapTracker:
-    """Store a compact, deduplicated record for each uncovered query facet."""
+    """Store exact gaps and group semantically similar questions."""
 
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url if database_url is not None else _database_url()
+
+    @staticmethod
+    def _settings() -> Any:
+        from app.core.config import get_settings
+
+        return get_settings()
+
+    @staticmethod
+    def _connection(database_url: str) -> Any:
+        import psycopg
+        from pgvector.psycopg import register_vector
+
+        conn = psycopg.connect(database_url, connect_timeout=3)
+        register_vector(conn)
+        return conn
+
+    @staticmethod
+    def _embed_many(texts: list[str]) -> list[list[float]]:
+        from app.services.embeddings import get_embedding_client
+
+        vectors = get_embedding_client().embed(texts)
+        if len(vectors) != len(texts):
+            raise ValueError("Embedding provider returned an unexpected vector count")
+        dimension = int(KnowledgeGapTracker._settings().embedding_dimension)
+        normalized: list[list[float]] = []
+        for vector in vectors:
+            values = [float(value) for value in vector]
+            if len(values) != dimension:
+                raise ValueError(
+                    f"Embedding dimension mismatch: expected {dimension}, got {len(values)}"
+                )
+            normalized.append(values)
+        return normalized
+
+    @staticmethod
+    def _thresholds() -> tuple[float, float]:
+        settings = KnowledgeGapTracker._settings()
+        auto_threshold = float(getattr(settings, "knowledge_gap_similarity_threshold", 0.90))
+        review_threshold = float(getattr(settings, "knowledge_gap_review_threshold", 0.80))
+        if not (0.0 <= review_threshold <= auto_threshold <= 1.0):
+            raise ValueError(
+                "knowledge gap thresholds must satisfy 0 <= review <= auto <= 1"
+            )
+        return auto_threshold, review_threshold
+
+    @staticmethod
+    def _evidence(wiki_candidates: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+        return [
+            {
+                "title": str(item.get("title") or "")[:250],
+                "path": str(item.get("wiki_path") or item.get("path") or "")[:500],
+                "section": str(item.get("section") or "")[:250],
+            }
+            for item in (wiki_candidates or [])[:5]
+            if isinstance(item, dict)
+        ]
+
+    def _find_cluster(self, cur: Any, embedding: list[float]) -> dict[str, Any] | None:
+        from pgvector import Vector
+
+        cur.execute(
+            """
+            SELECT c.id, c.canonical_question, c.embedding, c.occurrence_count,
+                   1 - (g.embedding <=> %s) AS similarity
+            FROM knowledge_gaps g
+            JOIN knowledge_gap_clusters c ON c.id=g.cluster_id
+            WHERE g.embedding IS NOT NULL AND g.cluster_id IS NOT NULL
+            ORDER BY g.embedding <=> %s
+            LIMIT 1
+            """,
+            (Vector(embedding), Vector(embedding)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "canonical_question": row[1],
+            "embedding": row[2],
+            "occurrence_count": int(row[3]),
+            "similarity": float(row[4]),
+        }
+
+    def _assign_cluster(
+        self,
+        cur: Any,
+        *,
+        query: str,
+        normalized: str,
+        embedding: list[float] | None,
+        existing_occurrences: int = 1,
+        first_seen_at: Any | None = None,
+        last_seen_at: Any | None = None,
+    ) -> tuple[uuid.UUID | None, uuid.UUID | None, float | None, str]:
+        """Create a distinct cluster row and store a suggestion, never auto-merge.
+
+        Exact duplicates are still deduplicated by the SHA-256 fingerprint before
+        this method is called. Semantic similarity is only a proposal signal; an
+        owner-confirmed group is managed separately by GapMapService.
+        """
+        if embedding is None:
+            return None, None, None, "unassigned"
+
+        from pgvector import Vector
+
+        nearest = self._find_cluster(cur, embedding)
+        _, review_threshold = self._thresholds()
+        similarity = nearest["similarity"] if nearest else None
+        suggested_cluster_id = None
+        match_type = "new"
+        if nearest and similarity is not None and similarity >= review_threshold:
+            suggested_cluster_id = nearest["id"]
+            match_type = "review_candidate"
+
+        cluster_id = uuid.uuid4()
+        cur.execute(
+            """
+            INSERT INTO knowledge_gap_clusters (
+                id, canonical_question, normalized_question, embedding, occurrence_count,
+                first_seen_at, last_seen_at
+            ) VALUES (%s, %s, %s, %s, %s, COALESCE(%s, NOW()), COALESCE(%s, NOW()))
+            """,
+            (cluster_id, query[:2000], normalized, Vector(embedding),
+             existing_occurrences, first_seen_at, last_seen_at),
+        )
+        return cluster_id, suggested_cluster_id, similarity, match_type
+
+    def _touch_existing(
+        self,
+        cur: Any,
+        *,
+        fingerprint: str,
+        query: str,
+        reason: str,
+        conversation_id: str | None,
+        query_id: str | None,
+        evidence: list[dict[str, str]],
+        source: str,
+    ) -> bool:
+        from psycopg.types.json import Jsonb
+
+        cur.execute(
+            """
+            UPDATE knowledge_gaps SET
+                sample_query=%s,
+                reason=%s,
+                occurrence_count=occurrence_count + 1,
+                last_seen_at=NOW(), updated_at=NOW(),
+                status=CASE WHEN %s='user_feedback' AND status IN ('resolved','dismissed')
+                            THEN 'open' ELSE status END,
+                resolved_at=CASE WHEN %s='user_feedback' AND status IN ('resolved','dismissed')
+                                 THEN NULL ELSE resolved_at END,
+                source=CASE WHEN %s='user_feedback' THEN 'user_feedback' ELSE source END,
+                last_conversation_id=%s::uuid,
+                last_query_id=%s::uuid,
+                wiki_candidates=CASE WHEN %s='[]'::jsonb THEN wiki_candidates ELSE %s END
+            WHERE fingerprint=%s
+            RETURNING cluster_id
+            """,
+            (
+                query[:2000], reason[:200], source, source, source,
+                conversation_id, query_id, Jsonb(evidence), Jsonb(evidence), fingerprint,
+            ),
+        )
+        row = cur.fetchone()
+        if row and row[0]:
+            cur.execute(
+                "UPDATE knowledge_gap_clusters SET occurrence_count=occurrence_count + 1, last_seen_at=NOW() WHERE id=%s",
+                (row[0],),
+            )
+        return row is not None
 
     def record_gap(
         self,
@@ -137,55 +416,102 @@ class KnowledgeGapTracker:
         wiki_candidates: list[dict[str, Any]] | None = None,
         source: str = "automatic",
     ) -> bool:
-        normalized = _normalise(query)
+        safe_query = _privacy_safe_query(query)
+        normalized = _normalise(safe_query)
         if not normalized or not self.database_url:
             return False
-        fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        evidence = [
-            {
-                "title": str(item.get("title") or "")[:250],
-                "path": str(item.get("wiki_path") or item.get("path") or "")[:500],
-                "section": str(item.get("section") or "")[:250],
-            }
-            for item in (wiki_candidates or [])[:5]
-        ]
-        try:
-            import psycopg
-            from psycopg.types.json import Jsonb
+        fingerprint = _fingerprint(normalized)
+        evidence = self._evidence(wiki_candidates)
 
-            with psycopg.connect(self.database_url, connect_timeout=3) as conn:
+        try:
+            # Fast path: exact duplicates retain SHA-256 deduplication and do not
+            # need another embedding-provider call.
+            with self._connection(self.database_url) as conn:
                 with conn.cursor() as cur:
                     _ensure_schema(cur)
+                    cur.execute(
+                        "SELECT cluster_id FROM knowledge_gaps WHERE fingerprint=%s",
+                        (fingerprint,),
+                    )
+                    exact = cur.fetchone()
+                    if exact and exact[0]:
+                        self._touch_existing(
+                            cur, fingerprint=fingerprint, query=safe_query, reason=reason,
+                            conversation_id=conversation_id, query_id=query_id,
+                            evidence=evidence, source=source,
+                        )
+                        return True
+
+            embedding: list[float] | None = None
+            if bool(getattr(self._settings(), "knowledge_gap_semantic_enabled", True)):
+                try:
+                    embedding = self._embed_many([normalized])[0]
+                except Exception:
+                    # Semantic grouping is an enhancement; exact SHA-256 tracking
+                    # must continue working when the embedding provider is down.
+                    logger.exception("Knowledge-gap embedding failed; using exact deduplication only")
+
+            from pgvector import Vector
+            from psycopg.types.json import Jsonb
+
+            with self._connection(self.database_url) as conn:
+                with conn.cursor() as cur:
+                    _ensure_schema(cur)
+                    # Serialize nearest-cluster selection + centroid update to avoid
+                    # two workers creating parallel clusters for the same question.
+                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_CLUSTER_LOCK_KEY,))
+                    cur.execute(
+                        "SELECT id, cluster_id, occurrence_count, first_seen_at, last_seen_at FROM knowledge_gaps WHERE fingerprint=%s FOR UPDATE",
+                        (fingerprint,),
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        if existing[1]:
+                            self._touch_existing(
+                                cur, fingerprint=fingerprint, query=safe_query, reason=reason,
+                                conversation_id=conversation_id, query_id=query_id,
+                                evidence=evidence, source=source,
+                            )
+                            return True
+                        cluster_id, suggested_id, similarity, match_type = self._assign_cluster(
+                            cur, query=safe_query, normalized=normalized, embedding=embedding,
+                            existing_occurrences=int(existing[2]),
+                            first_seen_at=existing[3],
+                            last_seen_at=existing[4],
+                        )
+                        cur.execute(
+                            """
+                            UPDATE knowledge_gaps SET embedding=%s, cluster_id=%s,
+                                suggested_cluster_id=%s, similarity_score=%s, cluster_match_type=%s
+                            WHERE fingerprint=%s
+                            """,
+                            (Vector(embedding) if embedding is not None else None, cluster_id,
+                             suggested_id, similarity, match_type, fingerprint),
+                        )
+                        self._touch_existing(
+                            cur, fingerprint=fingerprint, query=safe_query, reason=reason,
+                            conversation_id=conversation_id, query_id=query_id,
+                            evidence=evidence, source=source,
+                        )
+                        return True
+
+                    cluster_id, suggested_id, similarity, match_type = self._assign_cluster(
+                        cur, query=safe_query, normalized=normalized, embedding=embedding,
+                    )
                     cur.execute(
                         """
                         INSERT INTO knowledge_gaps (
                             fingerprint, normalized_query, sample_query, reason,
-                            last_conversation_id, last_query_id, wiki_candidates, source
-                        ) VALUES (%s, %s, %s, %s, %s::uuid, %s::uuid, %s, %s)
-                        ON CONFLICT (fingerprint) DO UPDATE SET
-                            sample_query = EXCLUDED.sample_query,
-                            reason = EXCLUDED.reason,
-                            occurrence_count = knowledge_gaps.occurrence_count + 1,
-                            last_seen_at = NOW(),
-                            updated_at = NOW(),
-                            status = CASE WHEN EXCLUDED.source = 'user_feedback'
-                                               AND knowledge_gaps.status IN ('resolved', 'dismissed')
-                                          THEN 'open' ELSE knowledge_gaps.status END,
-                            resolved_at = CASE WHEN EXCLUDED.source = 'user_feedback'
-                                                    AND knowledge_gaps.status IN ('resolved', 'dismissed')
-                                               THEN NULL ELSE knowledge_gaps.resolved_at END,
-                            source = CASE WHEN EXCLUDED.source = 'user_feedback'
-                                          THEN 'user_feedback' ELSE knowledge_gaps.source END,
-                            last_conversation_id = EXCLUDED.last_conversation_id,
-                            last_query_id = EXCLUDED.last_query_id,
-                            wiki_candidates = CASE
-                                WHEN EXCLUDED.wiki_candidates = '[]'::jsonb
-                                THEN knowledge_gaps.wiki_candidates
-                                ELSE EXCLUDED.wiki_candidates END
+                            last_conversation_id, last_query_id, wiki_candidates, source,
+                            embedding, cluster_id, suggested_cluster_id, similarity_score,
+                            cluster_match_type
+                        ) VALUES (%s,%s,%s,%s,%s::uuid,%s::uuid,%s,%s,%s,%s,%s,%s,%s)
                         """,
                         (
-                            fingerprint, normalized, query[:2000], reason[:200],
+                            fingerprint, normalized, safe_query[:2000], reason[:200],
                             conversation_id, query_id, Jsonb(evidence), source,
+                            Vector(embedding) if embedding is not None else None,
+                            cluster_id, suggested_id, similarity, match_type,
                         ),
                     )
             return True
@@ -193,13 +519,83 @@ class KnowledgeGapTracker:
             logger.exception("Failed to persist MedTrust knowledge gap")
             return False
 
+    def rebuild_semantic_index(self, batch_size: int = 100) -> dict[str, int]:
+        """Embed and cluster legacy exact-gap rows missing semantic metadata.
+
+        Run repeatedly until ``processed`` is smaller than ``batch_size``. This
+        avoids a startup-time embedding burst on existing installations.
+        """
+        if not self.database_url:
+            return {"processed": 0, "clustered": 0, "failed": 0}
+        if not 1 <= batch_size <= 500:
+            raise ValueError("batch_size must be between 1 and 500")
+
+        try:
+            with self._connection(self.database_url) as conn:
+                with conn.cursor() as cur:
+                    _ensure_schema(cur)
+                    cur.execute(
+                        """
+                        SELECT id, normalized_query, sample_query, occurrence_count,
+                               first_seen_at, last_seen_at
+                        FROM knowledge_gaps
+                        WHERE cluster_id IS NULL
+                        ORDER BY first_seen_at, id
+                        LIMIT %s
+                        """,
+                        (batch_size,),
+                    )
+                    rows = cur.fetchall()
+            if not rows:
+                return {"processed": 0, "clustered": 0, "failed": 0}
+
+            texts = [str(row[1]) for row in rows]
+            vectors = self._embed_many(texts)
+            from pgvector import Vector
+
+            clustered = 0
+            with self._connection(self.database_url) as conn:
+                with conn.cursor() as cur:
+                    _ensure_schema(cur)
+                    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_CLUSTER_LOCK_KEY,))
+                    for row, embedding in zip(rows, vectors):
+                        gap_id, normalized, sample_query, occurrences, first_seen_at, last_seen_at = row
+                        cur.execute(
+                            "SELECT cluster_id FROM knowledge_gaps WHERE id=%s FOR UPDATE",
+                            (gap_id,),
+                        )
+                        current = cur.fetchone()
+                        if not current or current[0]:
+                            continue
+                        cluster_id, suggested_id, similarity, match_type = self._assign_cluster(
+                            cur,
+                            query=str(sample_query),
+                            normalized=str(normalized),
+                            embedding=embedding,
+                            existing_occurrences=int(occurrences),
+                            first_seen_at=first_seen_at,
+                            last_seen_at=last_seen_at,
+                        )
+                        cur.execute(
+                            """
+                            UPDATE knowledge_gaps SET embedding=%s, cluster_id=%s,
+                                suggested_cluster_id=%s, similarity_score=%s,
+                                cluster_match_type=%s
+                            WHERE id=%s
+                            """,
+                            (Vector(embedding), cluster_id, suggested_id, similarity, match_type, gap_id),
+                        )
+                        clustered += 1
+            return {"processed": len(rows), "clustered": clustered, "failed": 0}
+        except Exception:
+            logger.exception("Failed to rebuild knowledge-gap semantic index")
+            return {"processed": 0, "clustered": 0, "failed": batch_size}
+
     def list_gaps(self) -> list[dict[str, Any]]:
-        """Return gaps in the camelCase shape expected by the admin frontend."""
+        """Return existing frontend fields plus semantic-cluster metadata."""
         if not self.database_url:
             return []
-        import psycopg
-
-        with psycopg.connect(self.database_url, connect_timeout=3) as conn:
+        with self._connection(self.database_url) as conn:
             with conn.cursor() as cur:
                 _ensure_schema(cur)
                 cur.execute(
@@ -207,33 +603,18 @@ class KnowledgeGapTracker:
                     SELECT g.id, g.sample_query, g.normalized_query, g.reason, g.status, g.source,
                            g.first_seen_at, g.updated_at, g.resolved_at,
                            g.last_conversation_id, g.last_query_id, g.wiki_candidates,
-                           f.id, f.rating, f.comment
+                           g.cluster_id, c.canonical_question, c.occurrence_count,
+                           g.similarity_score, g.cluster_match_type,
+                           g.suggested_cluster_id, sc.canonical_question
                     FROM knowledge_gaps g
-                    LEFT JOIN LATERAL (
-                        SELECT id, rating, comment
-                        FROM query_feedback
-                        WHERE query_id = g.last_query_id
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                    ) f ON TRUE
+                    LEFT JOIN knowledge_gap_clusters c ON c.id=g.cluster_id
+                    LEFT JOIN knowledge_gap_clusters sc ON sc.id=g.suggested_cluster_id
                     ORDER BY g.first_seen_at DESC
                     LIMIT 1000
                     """
                 )
                 rows = cur.fetchall()
-                comments: dict[int, list[dict[str, Any]]] = {}
-                if rows:
-                    cur.execute(
-                        """
-                        SELECT id, author, body, created_at, gap_id
-                        FROM knowledge_gap_comments
-                        WHERE gap_id = ANY(%s)
-                        ORDER BY created_at, id
-                        """,
-                        ([r[0] for r in rows],),
-                    )
-                    for c in cur.fetchall():
-                        comments.setdefault(c[4], []).append(_comment_view(c))
+
         gaps = []
         for r in rows:
             candidates = r[11] if isinstance(r[11], list) else []
@@ -252,14 +633,88 @@ class KnowledgeGapTracker:
                     {"id": c.get("path") or str(i), "title": c.get("title") or c.get("path") or ""}
                     for i, c in enumerate(candidates)
                 ],
-                **({"feedback": _feedback_view(r[12], r[13], r[14])} if r[12] else {}),
-                "comments": comments.get(r[0], []),
+                "ownerComment": "",
                 "webSearchUsed": False,
                 "createdAt": r[6].isoformat(),
                 "updatedAt": r[7].isoformat(),
+                "clusterId": str(r[12]) if r[12] else None,
+                "canonicalQuestion": r[13],
+                "clusterOccurrenceCount": int(r[14]) if r[14] is not None else None,
+                "similarityScore": float(r[15]) if r[15] is not None else None,
+                "clusterMatchType": r[16] or "unassigned",
+                "suggestedClusterId": str(r[17]) if r[17] else None,
+                "suggestedCanonicalQuestion": r[18],
                 **({"resolvedAt": r[8].isoformat()} if r[8] else {}),
             })
         return gaps
+
+    def list_clusters(self, limit: int = 500) -> list[dict[str, Any]]:
+        if not self.database_url:
+            return []
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        with self._connection(self.database_url) as conn:
+            with conn.cursor() as cur:
+                _ensure_schema(cur)
+                cur.execute(
+                    """
+                    SELECT c.id, c.canonical_question, c.occurrence_count,
+                           c.first_seen_at, c.last_seen_at,
+                           COUNT(g.id) AS distinct_questions,
+                           COUNT(g.id) FILTER (WHERE g.status='open') AS open_questions,
+                           COUNT(g.id) FILTER (WHERE g.status='in_review') AS in_review_questions,
+                           COUNT(g.id) FILTER (WHERE g.status='resolved') AS resolved_questions,
+                           COUNT(g.id) FILTER (WHERE g.status='dismissed') AS dismissed_questions,
+                           (SELECT COUNT(*) FROM knowledge_gaps sg
+                            WHERE sg.suggested_cluster_id=c.id) AS suggested_merges
+                    FROM knowledge_gap_clusters c
+                    LEFT JOIN knowledge_gaps g ON g.cluster_id=c.id
+                    GROUP BY c.id
+                    ORDER BY c.occurrence_count DESC, c.last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+                clusters = []
+                for row in rows:
+                    cur.execute(
+                        """
+                        SELECT id, sample_query, reason, status, occurrence_count,
+                               similarity_score, cluster_match_type
+                        FROM knowledge_gaps WHERE cluster_id=%s
+                        ORDER BY occurrence_count DESC, last_seen_at DESC
+                        LIMIT 100
+                        """,
+                        (row[0],),
+                    )
+                    members = cur.fetchall()
+                    clusters.append({
+                        "clusterId": str(row[0]),
+                        "canonicalQuestion": row[1],
+                        "occurrenceCount": int(row[2]),
+                        "firstSeenAt": row[3].isoformat(),
+                        "lastSeenAt": row[4].isoformat(),
+                        "distinctQuestions": int(row[5]),
+                        # Keep lifecycle states separate. `in_review` is unresolved,
+                        # but it is not an `open` record and must not inflate that count.
+                        "openQuestions": int(row[6]),
+                        "inReviewQuestions": int(row[7]),
+                        "resolvedQuestions": int(row[8]),
+                        "dismissedQuestions": int(row[9]),
+                        "unresolvedQuestions": int(row[6]) + int(row[7]),
+                        "suggestedMergeCount": int(row[10]),
+                        "members": [
+                            {
+                                "id": str(m[0]), "question": m[1], "reason": m[2],
+                                "status": m[3], "occurrenceCount": int(m[4]),
+                                "similarityScore": float(m[5]) if m[5] is not None else None,
+                                "matchType": m[6],
+                            }
+                            for m in members
+                        ],
+                    })
+        return clusters
 
     def update_status(
         self, gap_id: int, status: str, note: str | None = None, author: str | None = None
@@ -287,6 +742,7 @@ class KnowledgeGapTracker:
                 comment = _insert_comment(cur, gap_id, author or "Неизвестный автор", note) if note else None
                 return {"status": status, **({"comment": comment} if comment else {})}
 
+
     def add_comment(self, gap_id: int, author: str, body: str) -> dict[str, Any] | None:
         """Append an owner comment to the gap. Returns None if the gap does not exist."""
         if not self.database_url:
@@ -300,3 +756,21 @@ class KnowledgeGapTracker:
                 if cur.rowcount == 0:
                     return None
                 return _insert_comment(cur, gap_id, author, body)
+
+def _run_backfill() -> None:
+    parser = argparse.ArgumentParser(description="Build semantic clusters for existing MedTrust knowledge gaps")
+    parser.add_argument("--batch-size", type=int, default=100)
+    args = parser.parse_args()
+    tracker = KnowledgeGapTracker()
+    total = 0
+    while True:
+        result = tracker.rebuild_semantic_index(args.batch_size)
+        total += result["clustered"]
+        print(result)
+        if result["processed"] < args.batch_size or result["failed"]:
+            break
+    print({"total_clustered": total})
+
+
+if __name__ == "__main__":
+    _run_backfill()

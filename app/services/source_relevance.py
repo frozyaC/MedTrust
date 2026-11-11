@@ -175,7 +175,8 @@ _PREPARATION_TARGETS: tuple[tuple[str, str, str], ...] = (
     ("mri_scan", r"(?<![а-яё])мрт(?![а-яё])|магнитно-резонансн\w*\s+томограф\w*|magnetic\s+resonance\s+imag\w*",
      r"металл\w*|имплант\w*|кардиостимулятор\w*|контраст\w*|аллерги\w*|снять\s+(?:металл|украшен)|беремен\w*|натощак|не\s+(?:есть|пить)"),
     ("ultrasound", r"узи|ультразвуков\w*\s+исследован\w*|ultrasound|sonograph\w*",
-     r"натощак|мочев\w*\s+пузыр|наполнен\w*|газообраз\w*|не\s+есть|не\s+пить|слабител\w*|очист\w*\s+кишечник"),
+     r"натощак|мочев\w*\s+пузыр|наполнен\w*|газообраз\w*|не\s+(?:есть|пить|принимать\s+пищ\w*)|"
+     r"воздерж\w*.{0,30}от\s+при[её]м\w*\s+пищ\w*|слабител\w*|очист\w*\s+кишечник"),
     ("blood_test", r"общ\w*\s+анализ\w*\s+кров\w*|анализ\w*\s+кров\w*|сдач\w*\s+кров\w*|кров\w*\s+натощак|\bоак\b|complete\s+blood\s+count|blood\s+test|\bcbc\b",
      r"натощак|не\s+менее\s+\d+\s*час|через\s+\d+\s*час|последн\w*\s+при[её]м\w*\s+пищ|курен\w*|алкогол\w*|перед\s+сдач|до\s+сдач|подготов\w*|не\s+принимать\s+пищ"),
 )
@@ -469,6 +470,45 @@ def _is_generic_query_token(token: str) -> bool:
     )
 
 
+def specific_lab_evidence_problem(
+    query: str,
+    *,
+    title: str = "",
+    path: str = "",
+    section: str = "",
+    content: str = "",
+) -> str | None:
+    """Reject cross-talk between distinct laboratory tests sharing a generic blood path.
+
+    For example, a biochemistry page mentioning the words "blood test" is not
+    evidence for the composition of a complete blood count (ОАК).
+    """
+    q = (query or "").casefold().replace("ё", "е")
+    source = f"{title} {path.replace('_', ' ')} {section} {content}".casefold().replace("ё", "е")
+    requested: tuple[str, str, str] | None = None
+    if re.search(r"(?<![а-я])оак(?![а-я])|общ\w*\s+анализ\w*\s+кров\w*|complete\s+blood\s+count|\bcbc\b", q):
+        requested = (
+            "cbc",
+            r"(?<![а-я])оак(?![а-я])|общ\w*\s+анализ\w*\s+кров\w*|complete\s+blood\s+count|\bcbc\b",
+            r"биохим\w*\s+(?:анализ\w*\s+)?кров\w*|биохим\w*",
+        )
+    elif re.search(r"биохим\w*", q):
+        requested = ("biochemistry", r"биохим\w*|blood\s+chemistry|serum\s+chemistry", r"(?<![а-я])оак(?![а-я])|общ\w*\s+анализ\w*\s+кров\w*")
+    elif re.search(r"вич|hiv", q, re.IGNORECASE):
+        requested = ("hiv", r"вич|hiv|anti-hiv", r"(?:общ\w*\s+анализ\w*\s+кров\w*|биохим\w*)")
+    elif re.search(r"общ\w*\s+анализ\w*\s+моч\w*|оам", q):
+        requested = ("urinalysis", r"общ\w*\s+анализ\w*\s+моч\w*|(?<![а-я])оам(?![а-я])|urinalysis", r"общ\w*\s+анализ\w*\s+кров\w*|биохим\w*")
+
+    if not requested:
+        return None
+    name, expected_pattern, conflicting_pattern = requested
+    if re.search(expected_pattern, source, re.IGNORECASE):
+        return None
+    if re.search(conflicting_pattern, source, re.IGNORECASE):
+        return f"different_laboratory_test:{name}"
+    return None
+
+
 def classify_source_relevance(
     query: str,
     *,
@@ -493,6 +533,12 @@ def classify_source_relevance(
     query_tokens = _tokens(query)
     metadata_tokens = set(_tokens(metadata))
     source_tokens = set(_tokens(full_source))
+
+    lab_problem = specific_lab_evidence_problem(
+        query, title=title, path=path, section=section, content=content
+    )
+    if lab_problem:
+        return RelevanceAssessment(0.0, "irrelevant", lab_problem)
 
     preparation_problem = preparation_evidence_problem(
         query, title=title, path=path, section=section, content=content
