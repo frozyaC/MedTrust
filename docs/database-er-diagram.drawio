@@ -1,0 +1,91 @@
+<mxfile host="Electron" modified="2026-11-06T13:19:00.000Z" version="26.0.0">
+  <diagram id="medtrust-er" name="MedTrust Database ER Diagram">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1"
+                  tooltips="1" connect="1" arrows="1" fold="1"
+                  page="1" pageScale="1" pageWidth="1400" pageHeight="1000"
+                  math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="MedTrust PostgreSQL Database ER Diagram"
+                style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;"
+                vertex="1" parent="1">
+          <mxGeometry x="390" y="20" width="620" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="note" value="PostgreSQL + pgvector | PK = primary key | FK = foreign key | dashed link = application-level association"
+                style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;"
+                vertex="1" parent="1">
+          <mxGeometry x="250" y="60" width="900" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="knowledge_documents" value="&lt;b&gt;knowledge_documents&lt;/b&gt;&lt;br&gt;PK id UUID&lt;br&gt;UQ source_key TEXT&lt;br&gt;filename TEXT&lt;br&gt;title TEXT&lt;br&gt;wiki_path TEXT&lt;br&gt;path_segments TEXT[]&lt;br&gt;source_url TEXT?&lt;br&gt;content_hash TEXT&lt;br&gt;created_at TIMESTAMPTZ&lt;br&gt;updated_at TIMESTAMPTZ"
+                style="shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;align=left;spacingLeft=8;"
+                vertex="1" parent="1">
+          <mxGeometry x="60" y="130" width="300" height="270" as="geometry" />
+        </mxCell>
+
+        <mxCell id="knowledge_chunks" value="&lt;b&gt;knowledge_chunks&lt;/b&gt;&lt;br&gt;PK id UUID&lt;br&gt;FK document_id UUID&lt;br&gt;UQ (document_id, chunk_index)&lt;br&gt;chunk_index INTEGER&lt;br&gt;section TEXT&lt;br&gt;content TEXT&lt;br&gt;embedding_text TEXT&lt;br&gt;embedding VECTOR(1024)&lt;br&gt;search_vector TSVECTOR&lt;br&gt;path_vector TSVECTOR&lt;br&gt;created_at TIMESTAMPTZ"
+                style="shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;align=left;spacingLeft=8;"
+                vertex="1" parent="1">
+          <mxGeometry x="430" y="130" width="320" height="300" as="geometry" />
+        </mxCell>
+
+        <mxCell id="knowledge_index_state" value="&lt;b&gt;knowledge_index_state&lt;/b&gt;&lt;br&gt;PK id INTEGER (= 1)&lt;br&gt;archive_hash TEXT&lt;br&gt;updated_at TIMESTAMPTZ"
+                style="shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;align=left;spacingLeft=8;"
+                vertex="1" parent="1">
+          <mxGeometry x="830" y="130" width="280" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="conversations" value="&lt;b&gt;conversations&lt;/b&gt;&lt;br&gt;PK id UUID&lt;br&gt;title TEXT?&lt;br&gt;created_at TIMESTAMPTZ&lt;br&gt;updated_at TIMESTAMPTZ"
+                style="shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;align=left;spacingLeft=8;"
+                vertex="1" parent="1">
+          <mxGeometry x="60" y="520" width="280" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="chat_messages" value="&lt;b&gt;chat_messages&lt;/b&gt;&lt;br&gt;PK id UUID&lt;br&gt;FK conversation_id UUID&lt;br&gt;role TEXT: user | assistant | system&lt;br&gt;content TEXT&lt;br&gt;query_id UUID?&lt;br&gt;sources JSONB&lt;br&gt;created_at TIMESTAMPTZ"
+                style="shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;align=left;spacingLeft=8;"
+                vertex="1" parent="1">
+          <mxGeometry x="420" y="500" width="330" height="210" as="geometry" />
+        </mxCell>
+
+        <mxCell id="conversation_memory" value="&lt;b&gt;conversation_memory&lt;/b&gt;&lt;br&gt;PK/FK conversation_id UUID&lt;br&gt;summary TEXT&lt;br&gt;updated_at TIMESTAMPTZ"
+                style="shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;align=left;spacingLeft=8;"
+                vertex="1" parent="1">
+          <mxGeometry x="830" y="500" width="300" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="query_feedback" value="&lt;b&gt;query_feedback&lt;/b&gt;&lt;br&gt;PK id UUID&lt;br&gt;query_id UUID&lt;br&gt;rating TEXT: positive | negative&lt;br&gt;comment TEXT?&lt;br&gt;created_at TIMESTAMPTZ&lt;br&gt;&lt;i&gt;query_id has no FK constraint&lt;/i&gt;"
+                style="shape=table;startSize=30;container=1;collapsible=1;childLayout=tableLayout;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;align=left;spacingLeft=8;"
+                vertex="1" parent="1">
+          <mxGeometry x="830" y="740" width="300" height="180" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rel_document_chunks" value="1 : N"
+                style="edgeStyle=entityRelationEdgeStyle;html=1;startArrow=ERone;endArrow=ERmany;strokeColor=#6c8ebf;fontSize=11;"
+                edge="1" source="knowledge_documents" target="knowledge_chunks" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rel_conversation_messages" value="1 : N"
+                style="edgeStyle=entityRelationEdgeStyle;html=1;startArrow=ERone;endArrow=ERmany;strokeColor=#82b366;fontSize=11;"
+                edge="1" source="conversations" target="chat_messages" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rel_conversation_memory" value="1 : 1"
+                style="edgeStyle=entityRelationEdgeStyle;html=1;startArrow=ERone;endArrow=ERone;strokeColor=#82b366;fontSize=11;"
+                edge="1" source="conversations" target="conversation_memory" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rel_feedback_query" value="query_id (logical)"
+                style="edgeStyle=orthogonalEdgeStyle;dashed=1;html=1;endArrow=open;endFill=0;strokeColor=#d6b656;fontSize=11;"
+                edge="1" source="query_feedback" target="chat_messages" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
