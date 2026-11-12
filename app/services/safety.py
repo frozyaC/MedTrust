@@ -17,6 +17,8 @@ DEFAULT_SAFE_DOMAINS = {
     "2gis.ru", "2gis.com", "yandex.ru", "yandex.com", "tripadvisor.ru",
     "tripadvisor.com", "restaurantguru.com", "restoclub.ru", "zoon.ru",
     "afisha.ru", "flamp.ru", "google.com",
+    # Russian patient-facing endoscopy preparation instructions.
+    "medsi.ru", "astromedic.ru",
 }
 
 LOCAL_DISCOVERY_SAFE_DOMAINS = {

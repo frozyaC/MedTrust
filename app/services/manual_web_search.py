@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import unicodedata
 from urllib.parse import urlparse, unquote
 
 from app.services.gigachat import get_gigachat_client
@@ -339,30 +340,157 @@ def _factor_assessment_query(question: str, factor: str) -> str:
     return f"{question} {factor} clinical safety guidance".strip()
 
 
+def _normalize_search_text(value: str) -> str:
+    """Normalize whitespace and punctuation without joining adjacent words."""
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.replace("\u200b", " ").replace("\ufeff", " ")
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([,;:!?])(?=\S)", r"\1 ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _search_question_focus(question: str) -> str:
+    """Remove a patient-introduction clause while retaining the actual request.
+
+    Example: "Пациент с ...: если у него есть направление, как записаться?"
+    becomes "если у него есть направление, как записаться?". This is deliberately
+    structural and does not depend on a particular diagnosis.
+    """
+    text = _normalize_search_text(question)
+    if ":" in text:
+        prefix, suffix = text.split(":", 1)
+        if re.search(r"\bпациент(?:ка)?\b", prefix, re.IGNORECASE) and suffix.strip():
+            text = suffix.strip()
+    text = re.sub(
+        r"(?i)^(?:и\s+)?(?:если\s+)?(?:у\s+(?:него|неё|нее|пациента|пациентки)\s+)",
+        "",
+        text,
+    )
+    return _normalize_search_text(text)[:300]
+
+
+_ADMIN_ROUTING_RE = re.compile(
+    r"направлен|маршрут|маршрутиз|порядок\s+запис|запис(?:аться|и|ь|ься)?|"
+    r"куда\s+(?:обратиться|запис)|регистратур|талон|при[её]м",
+    re.IGNORECASE,
+)
+
+
+def _is_admin_routing_question(question: str) -> bool:
+    """Identify administrative patient-routing / appointment questions."""
+    return bool(_ADMIN_ROUTING_RE.search(_normalize_search_text(question)))
+
+
+def _is_software_ui_help_source(item: WebSearchResult) -> bool:
+    """Reject clinic-software help articles as evidence of real patient routing.
+
+    A page explaining how a staff member operates an appointment interface is not
+    evidence of the medical organization's actual referral/triage rules.
+    """
+    parsed = urlparse(item.url or "")
+    host = (parsed.hostname or "").casefold()
+    source_text = _normalize_search_text(
+        f"{item.title or ''} {item.snippet or ''} {parsed.path or ''}"
+    ).casefold()
+
+    support_host = bool(re.match(r"^(?:help|support|docs|kb|knowledgebase)\.", host))
+    ui_markers = bool(re.search(
+        r"наведени[ея]\s+курсора|курсор[а-яё]*\s+на\s+строк|"
+        r"нажмите\s+(?:кнопку|на\s+кнопку)|кликните|щелкните|"
+        r"вкладк[аеуы]|кнопк[аеуы]|интерфейс\s+(?:системы|программы|сервиса)|"
+        r"включить\s+запись\s+на\s+услуг|настройк[аи].{0,40}запис[ьи]|"
+        r"строк[аеуы].{0,50}(?:направлен|запис)|"
+        r"(?:личн[а-яё]*\s+кабинет|админ-панел[ьи]).{0,60}(?:направлен|запис)",
+        source_text,
+    ))
+    software_context = bool(re.search(
+        r"программ[а-яё]*|сервис[а-яё]*|платформ[а-яё]*|"
+        r"crm|медицинск[а-яё]*\s+информационн[а-яё]*\s+систем",
+        source_text,
+    ))
+    return ui_markers and (support_host or software_context)
+
+
+def _admin_routing_source_relevant(item: WebSearchResult) -> bool:
+    """Require evidence about real-world referral-based routing or appointment.
+
+    Excludes military/recruitment material and software-interface instructions:
+    neither answers how a patient should be routed by a medical organization.
+    """
+    source_text = _normalize_search_text(f"{item.title or ''} {item.snippet or ''}").casefold()
+    if re.search(r"арм(?:ия|ии|ию|ейск)|военкомат|призыв|военн(?:ая|ой|ого)\s+служб|годност[ьи]\s+к\s+служб", source_text):
+        return False
+    if _is_software_ui_help_source(item):
+        return False
+
+    has_referral = bool(re.search(r"направлен|маршрут|маршрутиз|по\s+направлен", source_text))
+    has_appointment = bool(re.search(r"запис|при[её]м|регистратур|талон|очеред", source_text))
+    has_healthcare_context = bool(re.search(
+        r"медицин|поликлиник|клиник|больниц|врач|пациент|здравоохран|госпитал|амбулатор",
+        source_text,
+    ))
+    return has_healthcare_context and has_referral and has_appointment
+
+
+def _broad_query_is_grounded(question: str, candidate: str) -> bool:
+    """Accept a shared-planner variant only when it retains the question scope."""
+    question_terms = _patient_factor_terms(question)
+    candidate_terms = _patient_factor_terms(candidate)
+    if question_terms.intersection(candidate_terms):
+        return True
+    if set(_topic_ids(question)).intersection(_topic_ids(candidate)):
+        return True
+    if set(_intent_ids(question)).intersection(_intent_ids(candidate)):
+        return True
+    return False
+
+
 def _queries(question: str, patient: dict | None = None) -> list[str]:
-    cleaned = " ".join(question.split())[:350]
+    """Build a bounded query plan around the user's information need.
+
+    Shared-planner expansions are retained only when they preserve an actual
+    topic, intent or content term from the question. This blocks unrelated
+    fallback terms (for example, "dosage") without discarding grounded variants.
+    """
+    cleaned = _normalize_search_text(question)[:350]
+    focus = _search_question_focus(cleaned) or cleaned
     patient_query_context = _patient_search_query_context(patient)
     patient_factors = _patient_search_factors(patient)
 
     def with_patient_context(value: str) -> str:
-        value = " ".join(str(value or "").split())
+        value = _normalize_search_text(value)
         if not value:
             return ""
         if not patient_query_context:
             return value[:600]
         return f"{value}; контекст пациента: {patient_query_context}"[:600]
 
-    # Preserve the patient-aware first pass and the exact question as a fallback.
-    variants = [with_patient_context(cleaned), cleaned]
+    variants: list[str] = []
+    if _is_admin_routing_question(cleaned):
+        # Search the administrative task separately from diagnoses and symptoms.
+        variants.extend([
+            with_patient_context(focus),
+            "порядок записи пациента в медицинскую организацию при наличии направления",
+            "запись на прием к врачу по направлению правила поликлиники",
+            "маршрутизация пациента по направлению порядок обращения в поликлинику",
+        ])
+    else:
+        variants.extend([with_patient_context(focus), with_patient_context(cleaned)])
 
-    # Search each clinically important factor in Russian and, where a known
-    # clinical translation exists, English. The English form improves recall for
-    # international guidelines while retaining the procedure/topic from the question.
-    for factor in patient_factors[:3]:
-        variants.append(f"{cleaned}; клинический фактор: {factor}"[:600])
-        english_query = _factor_english_query(cleaned, factor)
-        if english_query:
-            variants.append(english_query)
+    # Keep focused patient-factor searches only when structured patient data was
+    # actually supplied. Do not manufacture a generic clinical query from words
+    # in the question or from a diagnosis-only fragment.
+    if patient_factors:
+        for factor in patient_factors[:3]:
+            variants.append(with_patient_context(f"{focus}; клинический фактор: {factor}"))
+            english_query = _factor_english_query(focus, factor)
+            if english_query:
+                variants.append(english_query)
+
+    if not _is_admin_routing_question(cleaned):
+        for broad_query in _broad_search_queries(cleaned)[:3]:
+            if _broad_query_is_grounded(cleaned, broad_query):
+                variants.append(with_patient_context(broad_query))
 
     if re.search(r"(?:мрт|магнитно.?резонансн|\bmri\b)", cleaned, re.I):
         if re.search(r"контраст|contrast|gadolinium", cleaned, re.I):
@@ -374,11 +502,14 @@ def _queries(question: str, patient: dict | None = None) -> list[str]:
         else:
             variants.append(with_patient_context("MRI contraindications patient safety"))
 
-    variants.extend(with_patient_context(item) for item in _broad_search_queries(cleaned)[:3])
-    simplified = re.sub(r"(?i)^(какие|какова|что такое|перечисли|расскажи|укажи)\s+", "", cleaned)
-    simplified = simplified.rstrip("?.! ")
-    variants.append(with_patient_context(simplified))
-    return list(dict.fromkeys(x for x in variants if x))[:9]
+    # A simplified original phrase remains a fallback, but no unrelated generic
+    # expansions are added. Stable de-duplication preserves the diagnostic order.
+    simplified = re.sub(
+        r"(?i)^(какие|какова|что такое|перечисли|расскажи|укажи)\s+", "", focus
+    ).rstrip("?.! ")
+    if simplified and simplified.casefold() != focus.rstrip("?.! ").casefold():
+        variants.append(with_patient_context(simplified))
+    return list(dict.fromkeys(_normalize_search_text(x) for x in variants if x))[:9]
 
 
 def manual_web_answer(
@@ -396,23 +527,25 @@ def manual_web_answer(
     safe_limit = max(1, min(8, int(limit)))
     patient_context = _patient_search_context(patient)
     patient_factors = _patient_search_factors(patient)
+    search_focus = _search_question_focus(question)
+    admin_routing_intent = _is_admin_routing_question(question)
+    assessment_question = (
+        "порядок записи пациента в медицинскую организацию по направлению"
+        if admin_routing_intent else question
+    )
     search_queries = _queries(question, patient)
-    cleaned_question = " ".join(question.split())[:350]
 
-    # Keep the mapping between a focused query and the patient factor it was
-    # designed to investigate. Query provenance is later used for pool-building
-    # and diagnostics, not as proof that a result actually supports the factor.
+    # Keep query provenance tied to the focused variants actually sent to SearXNG.
+    # This is discovery metadata, never proof that a result supports a factor.
     factor_query_indices: dict[int, str] = {}
     for factor in patient_factors[:3]:
-        focused_queries = [f"{cleaned_question}; клинический фактор: {factor}"[:600]]
-        english_query = _factor_english_query(cleaned_question, factor)
-        if english_query:
-            focused_queries.append(english_query)
-        for focused_query in focused_queries:
-            try:
-                factor_query_indices[search_queries.index(focused_query) + 1] = factor
-            except ValueError:
-                continue
+        factor_marker = f"клинический фактор: {factor}".casefold()
+        english_query = _factor_english_query(search_focus, factor)
+        for query_index, search_query in enumerate(search_queries, 1):
+            if factor_marker in search_query.casefold() or (
+                english_query and search_query == english_query
+            ):
+                factor_query_indices[query_index] = factor
 
     attempts: list[dict] = []
     candidates: dict[str, WebSearchResult] = {}
@@ -503,6 +636,8 @@ def manual_web_answer(
 
     diagnostics = {
         "attempted_queries": attempts,
+        "search_focus": search_focus,
+        "detected_intent": "administrative_patient_routing" if admin_routing_intent else "general_medical_or_informational",
         "provider_results": provider_count,
         "rejected_unsafe_urls": blocked_count,
         "usable_results": len(candidates),
@@ -532,26 +667,36 @@ def manual_web_answer(
             "diagnostics": diagnostics,
         }
 
+    def source_matches_requested_intent(item: WebSearchResult) -> bool:
+        if not admin_routing_intent:
+            return True
+        return _admin_routing_source_relevant(item)
+
     def factor_relevance_matches(item: WebSearchResult) -> list[str]:
         """Factors mentioned by a source that is also relevant to this question."""
+        if not source_matches_requested_intent(item):
+            return []
         matched: list[str] = []
         for factor in patient_factors:
             if not _factor_matches_source(factor, item):
                 continue
-            factor_query = _factor_assessment_query(question, factor)
+            factor_query = _factor_assessment_query(assessment_question, factor)
             if is_relevant_web_result(factor_query, item):
                 matched.append(factor)
         return matched
 
     def preliminary_score(item: WebSearchResult) -> tuple[int, int, int, int, int]:
+        intent_relevant = source_matches_requested_intent(item)
         matched_factors = factor_relevance_matches(item)
         factor_evidence = any(
-            has_answerable_web_evidence(_factor_assessment_query(question, factor), item)
+            has_answerable_web_evidence(_factor_assessment_query(assessment_question, factor), item)
             for factor in matched_factors
         )
-        general_relevant = is_relevant_web_result(question, item)
+        general_relevant = (
+            intent_relevant and is_relevant_web_result(assessment_question, item)
+        )
         general_evidence = (
-            general_relevant and has_answerable_web_evidence(question, item)
+            general_relevant and has_answerable_web_evidence(assessment_question, item)
         )
         factor_query_hits = sum(
             1 for query_index in factor_query_indices
@@ -564,6 +709,17 @@ def manual_web_answer(
             int(general_relevant),
             factor_query_hits,
         )
+
+    intent_relevant_candidate_count = sum(
+        1 for item in candidates.values() if source_matches_requested_intent(item)
+    )
+    diagnostics["intent_relevant_candidate_count"] = intent_relevant_candidate_count
+    diagnostics["intent_rejected_candidate_count"] = len(candidates) - intent_relevant_candidate_count
+    diagnostics["software_ui_rejected_candidate_count"] = (
+        sum(1 for item in candidates.values() if _is_software_ui_help_source(item))
+        if admin_routing_intent else 0
+    )
+    diagnostics["intent_filter_applied"] = admin_routing_intent
 
     ordered_candidates = sorted(
         candidates.values(),
@@ -597,7 +753,7 @@ def manual_web_answer(
             item for item in candidates.values()
             if query_indices.intersection(candidate_query_indices.get(item.url, []))
         ]
-        assessment_query = _factor_assessment_query(question, factor)
+        assessment_query = _factor_assessment_query(assessment_question, factor)
         factor_candidates.sort(
             key=lambda item: (
                 int(_factor_matches_source(factor, item)),
@@ -625,15 +781,18 @@ def manual_web_answer(
     trusted_urls = {item.url for item in trusted}
     enriched_by_url = {
         item.url: item
-        for item in client._enrich_results(trusted, query=question)
+        for item in client._enrich_results(trusted, query=assessment_question)
     }
 
     assessed: list[dict] = []
     for original_item in picked:
         item = enriched_by_url.get(original_item.url, original_item)
-        general_relevant = is_relevant_web_result(question, item)
+        intent_relevant = source_matches_requested_intent(item)
+        general_relevant = (
+            intent_relevant and is_relevant_web_result(assessment_question, item)
+        )
         general_evidence = (
-            general_relevant and has_answerable_web_evidence(question, item)
+            general_relevant and has_answerable_web_evidence(assessment_question, item)
         )
         matched_factors = factor_relevance_matches(item)
         factor_evidence_matches = [
@@ -650,7 +809,7 @@ def manual_web_answer(
         # Mentioning a patient factor is useful for discovery but is not treated
         # as evidence of a specific recommendation. General and factor evidence
         # remain separately exposed to the client.
-        relevant = general_relevant or bool(matched_factors)
+        relevant = intent_relevant and (general_relevant or bool(matched_factors))
         evidence = general_evidence or factor_evidence
         relevance_score = (
             int(factor_evidence),
@@ -675,6 +834,10 @@ def manual_web_answer(
         })
 
     assessed.sort(key=lambda entry: entry["score"], reverse=True)
+    if admin_routing_intent:
+        diagnostics["intent_relevant_after_enrichment"] = sum(
+            1 for entry in assessed if entry["relevant"]
+        )
 
     # Guarantee visibility for a clinically relevant source for each searched
     # factor, where one exists. A mention-only page is labelled unverified and
@@ -684,7 +847,7 @@ def manual_web_answer(
     for factor in patient_factors[:3]:
         factor_candidates = [
             entry for entry in assessed
-            if factor in entry["matched_factors"]
+            if entry["relevant"] and factor in entry["matched_factors"]
         ]
         for entry in factor_candidates:
             url = entry["item"].url
@@ -698,6 +861,8 @@ def manual_web_answer(
     for entry in assessed:
         if len(selected) >= safe_limit:
             break
+        if not entry["relevant"]:
+            continue
         url = entry["item"].url
         if url not in selected_urls:
             selected.append(entry)
@@ -768,18 +933,33 @@ def manual_web_answer(
         if entry["evidence"]
     ]
     if not answer_context:
+        if not selected:
+            no_evidence_answer = (
+                "Поиск выполнен, но не найдено источников, соответствующих предмету вопроса. "
+                "Наличие совпадений по диагнозам или отдельным словам не подтверждает "
+                "порядок записи пациента."
+                if admin_routing_intent else
+                "Поиск выполнен, но ни один найденный источник не прошёл проверку "
+                "релевантности и достаточности сведений для ответа."
+            )
+            no_evidence_warning = (
+                "Результаты, не соответствующие информационной задаче, исключены из ответа. "
+                "Не используйте их как основание для решения."
+            )
+        else:
+            no_evidence_answer = (
+                "Найденные источники упоминают отдельные элементы вопроса, но не содержат "
+                "достаточных сведений для подтверждённого ответа."
+            )
+            no_evidence_warning = (
+                "Не используйте эти результаты как основание для решения. "
+                "Нужны профильные источники с текстом, подтверждающим ответ."
+            )
         return {
             "status": "success",
-            "answer": (
-                "Поиск выполнен, но ни один из найденных источников не прошёл "
-                "проверку релевантности и достаточности сведений для ответа. "
-                "Индивидуальное влияние факторов пациента по найденным материалам не установлено."
-            ),
+            "answer": no_evidence_answer,
             "sources": sources,
-            "warning": (
-                "Не используйте эти результаты как медицинское основание для решения. "
-                "Нужны профильные источники с текстом, подтверждающим ответ."
-            ),
+            "warning": no_evidence_warning,
             "diagnostics": diagnostics,
         }
 
@@ -795,7 +975,20 @@ def manual_web_answer(
         "Не делай индивидуальных назначений и не советуй самостоятельно начинать, "
         "отменять или менять лекарства. Если данных мало, объясни, что установлено, "
         "а что не подтверждено. Каждый существенный факт снабжай ссылкой [WEB1], [WEB2] и т. п. "
-        "Не добавляй предупреждение: система добавит его в конце.\n\n"
+        "Не добавляй предупреждение: система добавит его в конце.\n"
+        + (
+            "Для вопроса о порядке записи и маршрутизации используй только сведения "
+            "о реальных правилах медицинской организации или нормативном порядке. "
+            "Не переноси инструкции по работе с интерфейсом медицинской ИС, CRM, "
+            "сайта или личного кабинета на действия регистратора и пациента. "
+            "Указания о кнопках, курсоре, строках таблицы и настройках программы "
+            "не являются правилами медицинской маршрутизации. Не утверждай, что "
+            "направление упрощает, ускоряет или меняет запись, если это прямо не "
+            "подтверждено текстом источника. Если порядок для конкретной клиники "
+            "не установлен, прямо скажи об этом.\n"
+            if admin_routing_intent else ""
+        )
+        + "\n"
         f"Контекст пациента: {patient_context or 'не предоставлен'}. "
         "Учитывай его при оценке применимости найденных сведений, но не переноси "
         "общие выводы на пациента без прямого подтверждения источником.\n\n"
