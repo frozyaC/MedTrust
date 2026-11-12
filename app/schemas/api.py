@@ -27,6 +27,7 @@ class QueryRequest(BaseModel):
 class ManualWebSearchRequest(BaseModel):
     question: str = Field(min_length=3, max_length=3000)
     limit: int = Field(default=5, ge=1, le=8)
+    patient: PatientContext | None = None
 
 
 class CreateConversationRequest(BaseModel):
@@ -63,6 +64,11 @@ class GapGroupResolveRequest(BaseModel):
 
 
 class GapGroupDetachRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    author: str | None = Field(default=None, max_length=200)
+
+
+class GapClusterDetachRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
     author: str | None = Field(default=None, max_length=200)
 
