@@ -1181,7 +1181,7 @@ class GapMapService:
         ).fetchall()
         statuses = [str(r[0]) for r in rows]
         status = _group_status(statuses)
-        resolved_at = "NOW()" if status in {"resolved", "dismissed"} else "NULL"
+        resolved_at = "NOW()" if status in {"resolved", "dismissed"} else "CAST(NULL AS TIMESTAMPTZ)"
         conn.execute(
             f"""UPDATE knowledge_gap_groups
                 SET status=CASE WHEN status='candidate' THEN 'candidate' ELSE %s END,
