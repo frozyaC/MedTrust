@@ -45,7 +45,11 @@ services:
       start_period: 180s
 
   frontend:
-    build: ./frontend
+    # build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     restart: unless-stopped
     ports:
       - "5173:80"
