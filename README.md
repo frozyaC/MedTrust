@@ -214,6 +214,10 @@ Invoke-RestMethod "http://127.0.0.1:8080/search?q=мигрень&format=json"
 docker compose up -d db searxng
 ```
 
+По умолчанию при старте API загружается и индексируется архив
+`data/kb_kardio_klinika.zip`. Для замены базы знаний можно переопределить
+`KNOWLEDGE_INDEX_ARCHIVE` в локальном `.env`.
+
 PostgreSQL: `localhost:5433`, so it does not conflict with ALGSCC on `localhost:5432`.
 
 ```powershell
