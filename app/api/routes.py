@@ -10,6 +10,7 @@ from app.schemas.api import (
     FeedbackRequest,
     GapCommentRequest,
     GapGroupConfirmRequest,
+    GapClusterDetachRequest,
     GapGroupDetachRequest,
     GapGroupResolveRequest,
     GapStatusRequest,
@@ -46,7 +47,10 @@ def web_search(request: ManualWebSearchRequest) -> dict:
     try:
         # Manual web search remains an external, separately requested operation.
         # This route never writes returned pages into the corporate Wiki.
-        return manual_web_answer(request.question, request.limit)
+        return manual_web_answer(
+            request.question, request.limit,
+            request.patient.model_dump(exclude_none=True) if request.patient else None,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Ошибка веб-поиска: {exc}") from exc
 
@@ -234,6 +238,22 @@ def knowledge_gap_status_history(gap_id: int) -> list[dict]:
         raise HTTPException(status_code=500, detail="Ошибка загрузки истории статусов пробела") from exc
 
 
+@router.post("/knowledge-gaps/{gap_id}/detach-cluster")
+def detach_knowledge_gap_cluster_suggestion(
+    gap_id: int, request: GapClusterDetachRequest,
+) -> dict:
+    try:
+        return GapMapService().detach_cluster_suggestion(
+            gap_id, reason=request.reason, author=request.author,
+        )
+    except ValueError as exc:
+        code = 404 if "не найден" in str(exc).casefold() else 409
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Could not detach legacy cluster suggestion")
+        raise HTTPException(status_code=500, detail="Ошибка отвязки пробела от кластера-кандидата") from exc
+
+
 @router.get("/knowledge-gaps/clusters")
 def list_knowledge_gap_clusters(limit: int = 500) -> list[dict]:
     # Legacy projection retained for existing clients. New owner-managed groups are
@@ -277,9 +297,11 @@ def add_knowledge_gap_comment(gap_id: int, request: GapCommentRequest) -> dict:
 
 
 @router.get("/knowledge-gap-groups")
-def list_knowledge_gap_groups(status: str | None = None, limit: int = 500) -> list[dict]:
+def list_knowledge_gap_groups(
+    status: str | None = None, limit: int = 500, gap_id: int | None = None,
+) -> list[dict]:
     try:
-        return GapMapService().list_groups(status=status, limit=limit)
+        return GapMapService().list_groups(status=status, limit=limit, gap_id=gap_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

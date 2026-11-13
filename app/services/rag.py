@@ -31,10 +31,17 @@ from app.services.source_relevance import (
     requires_topic_specific_clinical_evidence,
 )
 from app.services.web_search import (
+    SearXNGWebSearchClient,
     WebSearchResponse,
     WebSearchResult,
+    has_answerable_web_evidence,
+    has_procedure_specific_preparation_evidence,
     is_dining_query,
     is_relevant_web_result,
+    _broad_search_queries,
+    _fallback_search_terms,
+    _topic_ids,
+    _intent_ids,
 )
 
 
@@ -52,6 +59,7 @@ class RagService:
         self.memory = ConversationMemory()
         self.knowledge_gap_tracker = KnowledgeGapTracker()
         self.contextualizer = LLMContextualizer(self.gigachat)
+        self.web_search = SearXNGWebSearchClient()
         self.settings = get_settings()
 
     @classmethod
@@ -1016,15 +1024,63 @@ class RagService:
         current = cls.INSUFFICIENT_DATA_ANSWER.rstrip(".").lower()
         return normalized == legacy or normalized == current
 
+    @staticmethod
+    def _requires_specialist_routing_evidence(question: str) -> bool:
+        """Identify questions whose answer must establish a concrete care route."""
+        value = (question or "").casefold().replace("ё", "е")
+        return bool(re.search(
+            r"куда\s+(?:запис\w*|обрат\w*|направ\w*)|"
+            r"к\s+какому\s+(?:врач\w*|специалист\w*)|"
+            r"какому\s+(?:врач\w*|специалист\w*)|"
+            r"(?:есть|получил\w*|выдал\w*|оформил\w*)\s+направлен\w*|"
+            r"направлен\w*.{0,40}(?:прием\w*|запис\w*|консультац\w*)|"
+            r"маршрутиз\w*|care\s+pathway|referral\s+route",
+            value,
+            re.IGNORECASE,
+        ))
+
+    @staticmethod
+    def _has_specialist_routing_evidence(docs: list[dict]) -> bool:
+        """Require both a named clinical destination and an explicit routing action."""
+        specialist_pattern = re.compile(
+            r"(?!специалист\b)[а-яё-]+(?:олог|иатр|ург|ист)\w*|терапевт\w*|"
+            r"врач\s+общей\s+практики|лечащ\w*\s+врач\w*",
+            re.IGNORECASE,
+        )
+        routing_pattern = re.compile(
+            r"запис\w*|при[её]м\w*|консультац\w*|направлен\w*|"
+            r"обрат\w*|маршрутиз\w*|талон\w*|appointment|referral",
+            re.IGNORECASE,
+        )
+        return any(
+            specialist_pattern.search(text) and routing_pattern.search(text)
+            for text in (
+                "\n".join(str(doc.get(key) or "") for key in (
+                    "title", "wiki_path", "path", "section", "content"
+                ))
+                for doc in docs
+            )
+        )
+
     @classmethod
     def _wiki_is_sufficient(cls, docs: list[dict], question: str = "") -> bool:
         """Decide whether the local Wiki contains sufficiently relevant evidence.
 
-        This check is deliberately independent of external freshness: /api/v1/query
-        uses only the local knowledge base. Freshness-sensitive requests are marked
-        separately in diagnostics and are never sent to a web provider from this path.
+        This check determines whether local Wiki passages can answer the requested
+        facet on their own. Freshness and missing-evidence checks are handled by the
+        caller, which may invoke the external search fallback for uncovered facets.
         """
         if not docs:
+            return False
+
+        # A generic page about a condition is not a routing instruction. Questions
+        # about where to book / how to use a referral require a Wiki passage that
+        # names a clinical destination and describes an appointment/referral action.
+        if (
+            question
+            and cls._requires_specialist_routing_evidence(question)
+            and not cls._has_specialist_routing_evidence(docs)
+        ):
             return False
 
         # These intents require source-level evidence, not just broad semantic similarity.
@@ -1142,11 +1198,26 @@ class RagService:
             relevant = doc.get("source_relevance_label", "relevant") == "relevant"
             relevance_score = float(doc.get("source_relevance_score") or 0.0)
             label = str(doc.get("source_relevance_label", "relevant"))
+
+            # Article metadata can match a query while the retrieved child section
+            # is unrelated. Do not call such a passage sufficient Wiki evidence.
+            body_relevance = doc.get("content_relevance")
+            if isinstance(body_relevance, dict) and body_relevance.get("label") == "irrelevant":
+                continue
+            answerability = doc.get("answerability_score")
+            if (
+                answerability is not None
+                and float(answerability) < 0.45
+                and not doc.get("supplemental_context")
+            ):
+                continue
             if needs_topic_specific_evidence and label != "relevant":
                 continue
             if label in {"relevant", "partial"} and dense >= threshold:
                 return True
-            if relevant and lexical_or_path:
+            if relevant and lexical_or_path and (
+                answerability is None or float(answerability) >= 0.45
+            ):
                 return True
             if label == "partial" and relevance_score >= 0.20 and lexical_or_path:
                 return True
@@ -2202,6 +2273,25 @@ class RagService:
                 ("побочн", "adverse_effect"), ("симптом", "symptom"),
                 ("лечен", "treatment"), ("терап", "therapy"),
                 ("профилактик", "prevention"), ("направлен", "referral"),
+                # Procedure preparation: normalize common Russian and English wording
+                # to shared concepts so a Russian claim can be attributed to an
+                # English patient leaflet without relying on citation labels.
+                ("гастроскоп", "gastroscopy"), ("эзофагогастродуодено", "gastroscopy"),
+                ("фгдс", "gastroscopy"), ("endoscop", "gastroscopy"),
+                ("подготов", "preparation"), ("prepar", "preparation"),
+                ("инструкц", "instruction"), ("instruction", "instruction"),
+                ("натощ", "fasting"), ("голод", "fasting"), ("fast", "fasting"),
+                ("ешь", "eat"), ("ест", "eat"), ("eat", "eat"), ("пищ", "food"),
+                ("еда", "food"), ("meal", "food"), ("food", "food"),
+                ("пить", "drink"), ("вод", "drink"), ("drink", "drink"),
+                ("жидк", "liquid"), ("liquid", "liquid"),
+                ("прозрачн", "clear"), ("clear", "clear"),
+                ("час", "hour"), ("hour", "hour"),
+                ("процедур", "procedure"), ("procedure", "procedure"),
+                ("исследован", "procedure"), ("examination", "procedure"),
+                ("перед", "before"), ("before", "before"),
+                ("курен", "smoking"), ("кур", "smoking"), ("smok", "smoking"),
+                ("лекарств", "medication"), ("medication", "medication"),
             ):
                 if token.startswith(prefix):
                     token = canonical
@@ -2554,13 +2644,20 @@ class RagService:
                 # because the same chunk was retrieved for both facets. Re-run the
                 # procedure-specific gate on the exact source/facet pair during the
                 # final audit, after claims have been attributed.
-                if preparation_evidence_problem(
+                source_title = str(source.get("title") or "")
+                source_path = str(source.get("path") or "")
+                source_section = str(source.get("section") or "")
+                source_content = str(source.get("_internal_evidence_text") or source.get("snippet") or "")
+                preparation_problem = preparation_evidence_problem(
                     aspect,
-                    title=str(source.get("title") or ""),
-                    path=str(source.get("path") or ""),
-                    section=str(source.get("section") or ""),
-                    content=str(source.get("_internal_evidence_text") or source.get("snippet") or ""),
-                ) is not None:
+                    title=source_title,
+                    path=source_path,
+                    section=source_section,
+                    content=source_content,
+                )
+                if preparation_problem is not None and not has_procedure_specific_preparation_evidence(
+                    aspect, title=source_title, content=source_content
+                ):
                     continue
                 candidate_sources.append(source)
                 source_id = str(source.get("source_id"))
@@ -2778,7 +2875,7 @@ class RagService:
     def _compact_web_results(question: str, results: list[WebSearchResult]) -> list[WebSearchResult]:
         """Bound evidence sent to the model while preserving diagnosis-specific sections."""
         settings = get_settings()
-        max_sources = max(1, int(getattr(settings, "rag_max_web_sources", 2)))
+        max_sources = min(5, max(3, int(getattr(settings, "rag_max_web_sources", 5))))
         max_chars = max(1200, int(getattr(settings, "rag_max_source_chars", 4200)))
         compacted: list[WebSearchResult] = []
         for result in results[:max_sources]:
@@ -3229,7 +3326,7 @@ class RagService:
             )
         else:
             source_type_hint = (
-                "Релевантные фрагменты локальной Wiki не найдены; веб-поиск этой ручкой не выполняется."
+                "В локальной Wiki и проверенных внешних источниках не найдено достаточно релевантных фрагментов."
             )
             allowed_citations = []
             if allow_unverified_fallback:
@@ -3362,8 +3459,8 @@ class RagService:
                 "relevance": assessment_data,
                 "matched_query_aspects": matched_aspects,
                 "relevance_query_aspect": assessment_query,
-                "verification_status": result.verification_status,
-                "verification_note": result.verification_note,
+                "verification_status": getattr(result, "verification_status", "verified"),
+                "verification_note": getattr(result, "verification_note", None),
             })
         return sources
 
@@ -3559,6 +3656,107 @@ class RagService:
             )
         )
 
+    @classmethod
+    def _web_search_query_variants(cls, query: str, limit: int = 3) -> list[str]:
+        """Create a small, grounded multilingual fallback plan for the main RAG route.
+
+        The manual endpoint searches more broadly. The main route intentionally keeps
+        a smaller plan, but it must still try a grounded English equivalent when a
+        Russian query has a recognized clinical topic and information intent.
+        """
+        original = " ".join((query or "").split()).strip()
+        if not original:
+            return []
+        variants = [original]
+        topics = _topic_ids(original)
+        intents = _intent_ids(original)
+
+        translated = _fallback_search_terms(original)
+        if translated and translated.casefold() != original.casefold():
+            translated_topics = _topic_ids(translated)
+            translated_intents = _intent_ids(translated)
+            if topics and topics.intersection(translated_topics) and (
+                not intents or intents.intersection(translated_intents)
+            ):
+                variants.append(translated)
+
+        # Accept shared planner expansions only when they preserve both the requested
+        # clinical topic and the requested information type. This excludes unrelated
+        # generic expansions such as "dosage".
+        try:
+            broad_variants = _broad_search_queries(original)[:4]
+        except Exception:
+            broad_variants = []
+        for candidate in broad_variants:
+            candidate = " ".join(str(candidate or "").split()).strip()
+            if not candidate or candidate.casefold() in {item.casefold() for item in variants}:
+                continue
+            candidate_topics = _topic_ids(candidate)
+            candidate_intents = _intent_ids(candidate)
+            if topics:
+                grounded = bool(topics.intersection(candidate_topics)) and (
+                    not intents or bool(intents.intersection(candidate_intents))
+                )
+            else:
+                grounded = bool(cls._claim_terms(original).intersection(cls._claim_terms(candidate)))
+            if grounded:
+                variants.append(candidate)
+            if len(variants) >= max(1, min(4, limit)):
+                break
+        return variants[:max(1, min(4, limit))]
+
+    def _search_web_aspect(
+        self, client: SearXNGWebSearchClient, query: str, limit: int = 3
+    ) -> WebSearchResponse:
+        """Search an aspect with bounded grounded variants and merge unique evidence."""
+        variants = self._web_search_query_variants(query, limit=3)
+        merged: list[WebSearchResult] = []
+        seen_urls: set[str] = set()
+        attempted: list[str] = []
+        errors: list[str] = []
+        statuses: list[str] = []
+
+        for variant in variants:
+            response = client.search(variant, limit=limit)
+            statuses.append(str(response.status))
+            if response.error:
+                errors.append(str(response.error))
+            variant_attempts = list(getattr(response, "attempted_queries", None) or [variant])
+            for item in variant_attempts:
+                if item and item not in attempted:
+                    attempted.append(item)
+            for result in response.results:
+                key = str(result.url or "").rstrip("/").casefold()
+                if not key or key in seen_urls:
+                    continue
+                seen_urls.add(key)
+                merged.append(result)
+                if len(merged) >= max(1, limit):
+                    break
+            if len(merged) >= max(1, limit):
+                break
+
+        if merged:
+            status = "success"
+        elif not statuses:
+            status = "not_attempted"
+        elif any(value == "api_error" for value in statuses):
+            status = "api_error"
+        elif all(value == "disabled" for value in statuses):
+            status = "disabled"
+        elif all(value == "no_provider_results" for value in statuses):
+            status = "no_provider_results"
+        elif all(value == "no_safe_results" for value in statuses):
+            status = "no_safe_results"
+        else:
+            status = "no_relevant_results"
+        return WebSearchResponse(
+            status,
+            merged,
+            "; ".join(errors) if errors else None,
+            attempted_queries=attempted,
+        )
+
     def answer(self, question: str, patient: dict | None, top_k: int, conversation_id: str | None = None) -> dict:
         review_diagnostics = self._answer_review_diagnostics()
         query_id = str(uuid.uuid4())
@@ -3654,28 +3852,42 @@ class RagService:
         docs, retrieval_queries = self._search_question_aspects(
             contextualized, patient, retrieval_candidates
         )
-        # /api/v1/query is intentionally Wiki-only. Search facets against the local
-        # PostgreSQL/pgvector index, record uncovered knowledge gaps, and do not call
-        # SearXNG or construct external search links from this endpoint.
+
+        # Wiki-first, facet-by-facet fallback: only aspects without sufficiently
+        # answerable local evidence are sent to SearXNG. A strong match on one aspect
+        # must not suppress the search for another uncovered aspect.
+        aspect_responses: list[tuple[str, str, WebSearchResponse]] = []
         facet_wiki_sufficiency: dict[str, bool] = {}
         web_search_decision_reasons: dict[str, str] = {}
         fresh_guidance_aspects = [
             aspect for aspect in retrieval_queries if requires_fresh_clinical_search(aspect)
         ]
+        web_search_client = getattr(self, "web_search", None)
+        if web_search_client is None:
+            web_search_client = SearXNGWebSearchClient()
+            self.web_search = web_search_client
+
         for aspect in retrieval_queries:
             aspect_docs = self._docs_for_aspect(docs, aspect, retrieval_queries)
-            facet_wiki_sufficiency[aspect] = self._wiki_is_sufficient(aspect_docs, aspect)
+            wiki_sufficient_for_aspect = self._wiki_is_sufficient(aspect_docs, aspect)
             safety_gap = self._uncovered_safety_detail(question, aspect_docs)
             fresh_guidance_required = requires_fresh_clinical_search(aspect)
 
+            routing_evidence_gap = (
+                self._requires_specialist_routing_evidence(aspect)
+                and not self._has_specialist_routing_evidence(aspect_docs)
+            )
             if safety_gap:
-                facet_wiki_sufficiency[aspect] = False
+                wiki_sufficient_for_aspect = False
                 reason = "safety_sensitive_follow_up_not_covered_by_wiki"
+            elif routing_evidence_gap:
+                wiki_sufficient_for_aspect = False
+                reason = "wiki_does_not_confirm_specialist_routing_or_referral_instructions"
             elif fresh_guidance_required:
-                # The local article may be useful, but it cannot establish external
-                # currency. Preserve that limitation without falling back to the web.
-                reason = "fresh_clinical_guidance_not_verified_externally_database_only_mode"
-            elif facet_wiki_sufficiency[aspect]:
+                # Local material can be used, but cannot independently establish
+                # that a clinical recommendation is current.
+                reason = "fresh_clinical_guidance_requires_online_verification"
+            elif wiki_sufficient_for_aspect:
                 reason = "wiki_sufficient_relevant_evidence"
             elif requires_topic_specific_clinical_evidence(aspect) and not any(
                 has_topic_specific_clinical_evidence(
@@ -3689,11 +3901,13 @@ class RagService:
                 reason = "no_topic_specific_wiki_evidence"
             else:
                 reason = "wiki_evidence_does_not_cover_request"
+
+            facet_wiki_sufficiency[aspect] = wiki_sufficient_for_aspect
             web_search_decision_reasons[aspect] = reason
 
-            # Keep knowledge-gap tracking independent of web search. A fresh-guidance
-            # request is a Wiki-maintenance signal even if a local article was found.
-            if not facet_wiki_sufficiency[aspect] or fresh_guidance_required:
+            # Knowledge-gap tracking remains Wiki-specific even when web evidence
+            # later provides a useful answer; external pages do not update the Wiki.
+            if not wiki_sufficient_for_aspect or fresh_guidance_required:
                 try:
                     self.knowledge_gap_tracker.record_gap(
                         query=aspect,
@@ -3703,11 +3917,64 @@ class RagService:
                         wiki_candidates=aspect_docs,
                     )
                 except Exception:
-                    logger.exception("Knowledge-gap tracking failed in Wiki-only query")
+                    logger.exception("Knowledge-gap tracking failed during Wiki-first query")
 
-        web_response = WebSearchResponse("not_attempted", [])
-        web_result_aspects: dict[str, list[str]] = {}
-        web_search_diagnostics: list[dict[str, Any]] = []
+            if wiki_sufficient_for_aspect and not fresh_guidance_required and not safety_gap:
+                continue
+
+            web_query = self._web_query_for_aspect(aspect, docs)
+            try:
+                response = self._search_web_aspect(web_search_client, web_query, limit=3)
+            except Exception as exc:
+                logger.exception("SearXNG fallback failed for facet: %s", aspect)
+                response = WebSearchResponse(
+                    "api_error", [], error=str(exc), attempted_queries=[web_query]
+                )
+
+            # Defense in depth: the client applies safe-domain and relevance checks;
+            # this second pass ties each result to the exact facet and checks that the
+            # fetched snippet contains enough text to serve as evidence.
+            relevant_results: list[WebSearchResult] = []
+            topic_specific_query = requires_topic_specific_clinical_evidence(web_query)
+            for result in response.results:
+                relevant = is_relevant_web_result(web_query, result)
+                answerable = has_answerable_web_evidence(web_query, result)
+                topic_specific_match = (
+                    not topic_specific_query
+                    or has_topic_specific_clinical_evidence(
+                        web_query,
+                        f"{result.title} {result.url} {result.snippet}",
+                    )
+                )
+                if not (relevant and answerable and topic_specific_match):
+                    continue
+                relevant_results.append(result)
+
+            if len(relevant_results) != len(response.results):
+                response = WebSearchResponse(
+                    "success" if relevant_results else "no_relevant_results",
+                    relevant_results,
+                    response.error,
+                    response.attempted_queries,
+                )
+            elif not response.results and response.status == "success":
+                response = WebSearchResponse(
+                    "no_relevant_results", [], response.error, response.attempted_queries
+                )
+
+            response = WebSearchResponse(
+                response.status,
+                self._compact_web_results(web_query, response.results),
+                response.error,
+                response.attempted_queries,
+            )
+            aspect_responses.append((aspect, web_query, response))
+
+        web_response, web_result_aspects, web_search_diagnostics = self._merge_web_responses(
+            aspect_responses
+        )
+        # This flag deliberately describes Wiki sufficiency only. A later verified
+        # web source may cover a missing aspect, but must not be relabelled as Wiki.
         wiki_sufficient = bool(retrieval_queries) and all(facet_wiki_sufficiency.values())
         all_sources = self._collect_sources(
             docs, web_response.results, wiki_sufficient,
@@ -3718,16 +3985,19 @@ class RagService:
         review_diagnostics["source_evidence_check"] = {
             "wiki_evidence_available": bool(self._wiki_sufficient_docs(docs, question=contextualized)),
             "wiki_strong_match": bool(wiki_sufficient),
-            "web_results_returned": 0,
-            "web_search_enabled": False,
-            "web_search_status": "not_attempted",
+            "web_search_enabled": bool(getattr(getattr(web_search_client, "settings", None), "web_search_enabled", False)),
+            "web_results_returned": len(web_response.results),
+            "web_search_status": web_response.status,
             "web_search_decision_reasons": web_search_decision_reasons,
             "facet_coverage": [
                 {
                     "query": aspect,
                     "wiki_sufficient": facet_wiki_sufficiency.get(aspect, False),
-                    "web_search_attempted": False,
+                    "web_search_attempted": any(item[0] == aspect for item in aspect_responses),
                     "web_search_reason": web_search_decision_reasons.get(aspect),
+                    "web_results_returned": next((
+                        len(item[2].results) for item in aspect_responses if item[0] == aspect
+                    ), 0),
                 }
                 for aspect in retrieval_queries
             ],
@@ -3738,8 +4008,11 @@ class RagService:
             retrieval_queries=retrieval_queries,
         )
 
-        # Current-guidance requests remain explicitly unverified for freshness because
-        # this endpoint deliberately does not query external sources.
+        # A current-guidance facet is covered only when a web source for that exact
+        # facet is actually cited in the generated answer, not merely returned by search.
+        fresh_guidance_aspects = [
+            aspect for aspect in retrieval_queries if requires_fresh_clinical_search(aspect)
+        ]
         allow_unverified_fallback = False
         prompt = ""
         generation_usage = None
@@ -3757,25 +4030,37 @@ class RagService:
             })
         elif all_sources:
             prompt = self._build_prompt(
-                question, patient, docs, [], memory_context, wiki_sufficient,
-                web_result_aspects={},
+                question, patient, docs, web_response.results, memory_context, wiki_sufficient,
+                web_result_aspects=web_result_aspects,
                 contextualized_question=contextualized,
                 retrieval_queries=retrieval_queries,
-                allow_unverified_fallback=False,
+                allow_unverified_fallback=allow_unverified_fallback,
             )
-            # The model sees only retrieved Wiki passages and conversation context.
+            # One answer-generation call combines Wiki and verified web evidence.
             answer = self.gigachat.chat(prompt)
             generation_usage = getattr(self.gigachat, "last_usage", None)
             gigachat_calls = 1
             review_diagnostics["attempts"]["initial_generation"] = True
+        elif is_weather_query(contextualized):
+            answer = (
+                "Не удалось получить актуальные данные из подключённых источников. "
+                "Проверьте доступность SearXNG и повторите запрос."
+            )
+            review_diagnostics["attempts"]["initial_generation"] = False
+            review_diagnostics.update({
+                "stage": "web_search_no_evidence",
+                "review_mode": "fail_closed_without_live_data",
+            })
         else:
-            # No eligible local source: do not generate an answer from model memory.
+            # No eligible Wiki or web source: never generate a factual answer from
+            # model memory alone.
             answer = self.INSUFFICIENT_DATA_ANSWER
             review_diagnostics["attempts"]["initial_generation"] = False
             review_diagnostics.update({
-                "stage": "local_wiki_no_evidence",
-                "review_mode": "fail_closed_without_local_sources",
+                "stage": "wiki_and_web_no_evidence",
+                "review_mode": "fail_closed_without_sources",
             })
+
         # The generated text is only a draft. Deterministic source attribution below
         # removes unsupported claims, and the final evidence gate prevents restoring
         # an ungrounded medical draft when verification fails.
@@ -3808,18 +4093,37 @@ class RagService:
         facet_coverage = self._facet_coverage(retrieval_queries, response_sources, claim_audit)
         uncovered_facets = [item["query"] for item in facet_coverage if not item.get("covered")]
         if uncovered_facets:
-            reason = "в локальной базе знаний недостаточно релевантных и подтверждённых данных"
+            if web_response.status == "disabled":
+                reason = "веб-поиск отключён настройками приложения"
+            elif web_response.status in {"api_error", "no_provider_results"}:
+                reason = "веб-поиск недоступен или не вернул результатов"
+            elif web_response.status == "no_safe_results":
+                reason = "полученные адреса не прошли проверку разрешённых источников"
+            elif web_response.status == "no_relevant_results":
+                reason = "веб-страницы не подтвердили запрошенную подтему"
+            else:
+                reason = "в локальной Wiki и проверенных внешних источниках недостаточно подтверждённых данных"
             missing_items = "\n".join(f"- **{facet}** — {reason}." for facet in uncovered_facets)
             note = "### Что не удалось надёжно подтвердить\n" + missing_items
             answer = f"{answer.rstrip()}\n\n{note}".strip() if answer.strip() else note
         if not answer.strip():
-            answer = "Не удалось получить достаточно подтверждённых сведений из локальной базы знаний."
+            answer = "Не удалось получить достаточно подтверждённых сведений из локальной Wiki и внешнего поиска."
 
         has_supported_non_fresh_facet = any(
             item.get("covered") and item.get("query") not in fresh_guidance_aspects
             for item in facet_coverage
         )
-        fresh_guidance_without_web_support = bool(fresh_guidance_aspects)
+        missing_fresh_facets = [
+            aspect for aspect in fresh_guidance_aspects
+            if not any(
+                source.get("source_type") == "web"
+                and aspect in (source.get("matched_query_aspects") or [])
+                and source.get("used_in_answer")
+                and source.get("verification_status", "verified") == "verified"
+                for source in response_sources
+            )
+        ]
+        fresh_guidance_without_web_support = bool(missing_fresh_facets)
         verified_used_sources = [
             source for source in used_sources
             if source.get("verification_status", "verified") == "verified"
@@ -3830,13 +4134,14 @@ class RagService:
         ]
         unverified_clinical_fallback = self._is_medical_request(contextualized) and (
             bool(uncovered_facets)
-            or not wiki_sufficient
             or not verified_used_sources
             or bool(unverified_used_sources)
+            or fresh_guidance_without_web_support
         )
         replaced_by_safe_message = False
         if unverified_clinical_fallback:
-            # Never restore an ungrounded model draft and never add external search links.
+            # Never restore an ungrounded model draft. Verified sources may support
+            # a partial answer, but uncovered clinical claims remain excluded.
             answer = self._clean_unverified_draft(answer)
             special_evidence_required = is_price_query(contextualized) or is_contraindication_query(contextualized)
             replaced_by_safe_message = (
@@ -3852,32 +4157,33 @@ class RagService:
                     source["attributed_claims"] = []
             review_diagnostics["unverified_fallback"] = {
                 "enabled": False,
-                "reason": "web_search_disabled_for_query_endpoint",
+                "reason": web_response.status,
                 "verified_used_source_count": 0 if replaced_by_safe_message else len(verified_used_sources),
                 "search_links_added": 0,
                 "model_draft_restored": False,
                 "safe_message_used": replaced_by_safe_message,
-                "mode": "local_wiki_only",
+                "mode": "wiki_first_with_web_fallback",
             }
         else:
             review_diagnostics["unverified_fallback"] = {
                 "enabled": False,
-                "reason": "web_search_disabled_for_query_endpoint",
+                "reason": web_response.status,
                 "search_links_added": 0,
-                "mode": "local_wiki_only",
+                "mode": "wiki_first_with_web_fallback",
             }
 
         if fresh_guidance_without_web_support:
             freshness_note = (
-                "**Актуальность:** `/api/v1/query` использует только локальную Wiki. "
-                "Внешние источники не проверялись, поэтому актуальность рекомендаций отдельно не подтверждена."
+                "**Актуальность:** не удалось подтвердить актуальность рекомендации внешними "
+                "источниками для каждой запрошенной подтемы. Сверьте её с действующими "
+                "клиническими рекомендациями и локальными инструкциями."
             )
             if freshness_note not in answer:
                 answer = f"{answer.rstrip()}\n\n{freshness_note}".strip()
         elif unverified_clinical_fallback and not replaced_by_safe_message:
             local_source_note = (
-                "**Ограничение источников:** ответ сформирован только по локальной Wiki; "
-                "непокрытые аспекты не подтверждены найденными материалами."
+                "**Ограничение источников:** часть ответа не получила подтверждения "
+                "в локальной Wiki или проверенных внешних источниках."
             )
             if local_source_note not in answer:
                 answer = f"{answer.rstrip()}\n\n{local_source_note}".strip()
@@ -3889,7 +4195,6 @@ class RagService:
         all_facets_covered = bool(facet_coverage) and all(item["covered"] for item in facet_coverage)
         source_checks_passed = (
             bool(verified_used_sources)
-            and wiki_sufficient
             and not unverified_used_sources
             and not unverified_clinical_fallback
             and all_claims_supported
@@ -3923,7 +4228,7 @@ class RagService:
                 [] if source_checks_passed else [
                     "Ответ дан в предварительном режиме: нет использованного источника, подтвердившего все медицинские тезисы."
                     if unverified_clinical_fallback
-                    else "Внешняя актуальность не проверялась: /api/v1/query использует только локальную Wiki."
+                    else "Для одной или нескольких подтем не найдено подтверждение актуальности во внешних источниках."
                     if fresh_guidance_without_web_support
                     else "Не все утверждения или подтемы подтверждены найденными источниками."
                 ]
@@ -3934,7 +4239,7 @@ class RagService:
                 [] if source_checks_passed else [
                     "Ответ сохранён как предварительный; проверка источников не пройдена и требует ручной сверки."
                     if unverified_clinical_fallback
-                    else "Внешняя актуальность не проверялась: /api/v1/query использует только локальную Wiki."
+                    else "Для одной или нескольких подтем не найдено подтверждение актуальности во внешних источниках."
                     if fresh_guidance_without_web_support
                     else "Проверка выполнена; имеются непокрытые утверждения или подтемы."
                 ]
@@ -3985,14 +4290,18 @@ class RagService:
             "sources": response_sources, "retrieval": self._retrieval_view(
                 docs, question=contextualized, retrieval_queries=retrieval_queries
             ),
-            "web_search_attempted": False,
-            "web_search_used": False,
-            "web_search_status": "not_attempted",
-            "web_search_policy": "disabled_for_query_endpoint",
+            "web_search_attempted": bool(aspect_responses),
+            "web_search_used": bool(web_response.results),
+            "web_search_status": web_response.status if web_response.status != "not_attempted" else "not_needed",
+            "web_search_policy": "wiki_first_then_searxng_for_uncovered_facets",
             "web_search_by_facet": web_search_diagnostics,
             "web_search_decision_reasons": web_search_decision_reasons,
-            "web_search_queries": [],
-            "attempted_web_queries": [],
+            "web_search_queries": [item[1] for item in aspect_responses],
+            "attempted_web_queries": list(dict.fromkeys(
+                searched_query
+                for _, facet_query, response in aspect_responses
+                for searched_query in (response.attempted_queries or [facet_query])
+            )),
             "raw_question": question,
             "resolved_query": contextualized,
             "query_context": contextualization.as_dict(),

@@ -198,6 +198,7 @@ class GapMapService:
             """,
             "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_gap_group_members_active_gap_idx ON knowledge_gap_group_members(gap_id) WHERE removed_at IS NULL",
             "CREATE INDEX IF NOT EXISTS knowledge_gap_group_status_idx ON knowledge_gap_groups(status, updated_at DESC)",
+            "CREATE TABLE IF NOT EXISTS knowledge_gap_cluster_suggestion_history (id BIGSERIAL PRIMARY KEY, gap_id BIGINT NOT NULL REFERENCES knowledge_gaps(id) ON DELETE RESTRICT, suggested_cluster_id UUID NOT NULL, similarity_score DOUBLE PRECISION, reason TEXT NOT NULL, author TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
             """
             CREATE TABLE IF NOT EXISTS knowledge_gap_group_operations (
                 idempotency_key TEXT PRIMARY KEY,
@@ -610,6 +611,13 @@ class GapMapService:
                    latest.id, latest.source_ids,
                    user_message.id,
                    (SELECT COUNT(DISTINCT ei.event_id) FROM knowledge_gap_event_items ei WHERE ei.gap_id=g.id),
+                   g.cluster_id, g.suggested_cluster_id, g.cluster_match_type, g.similarity_score,
+                   (SELECT COUNT(DISTINCT related.id) FROM knowledge_gaps related
+                    WHERE related.id<>g.id AND (
+                        related.suggested_cluster_id=g.cluster_id
+                        OR (g.suggested_cluster_id IS NOT NULL AND related.suggested_cluster_id=g.suggested_cluster_id)
+                        OR related.cluster_id=g.suggested_cluster_id
+                    )) AS suggested_merge_count,
                    f.id, f.rating, f.comment,
                    (SELECT json_agg(json_build_object('id', c.id, 'author', c.author, 'body', c.body, 'createdAt', c.created_at) ORDER BY c.created_at, c.id)
                       FROM knowledge_gap_comments c WHERE c.gap_id = g.id)
@@ -652,16 +660,21 @@ class GapMapService:
                 "previousMessageId": str(r[17]) if r[17] else None,
                 "sourceIds": _json(r[22], []), "occurrenceCount": int(r[11]),
                 "eventCount": int(r[24] or 0), "ownerComment": r[13] or "",
+                "clusterId": str(r[25]) if r[25] else None,
+                "suggestedClusterId": str(r[26]) if r[26] else None,
+                "clusterMatchType": str(r[27] or "unassigned"),
+                "similarityScore": float(r[28]) if r[28] is not None else None,
+                "suggestedMergeCount": int(r[29] or 0),
                 "feedback": (
                     {
-                        "id": str(r[25]),
-                        "rating": r[26],
-                        "comment": (r[27] or "").strip(),
+                        "id": str(r[30]),
+                        "rating": r[31],
+                        "comment": (r[32] or "").strip(),
                     }
-                    if r[25] is not None
+                    if r[30] is not None
                     else None
                 ),
-                "comments": r[28] if isinstance(r[28], list) else [],
+                "comments": r[33] if isinstance(r[33], list) else [],
                 "webSearchUsed": False,
                 "resolvedBy": r[12], "createdAt": r[6].isoformat(),
                 "updatedAt": r[7].isoformat(),
@@ -764,6 +777,13 @@ class GapMapService:
                     LEFT JOIN knowledge_gap_groups gg ON gg.id=gm.group_id
                     WHERE g.id<>%s AND g.embedding IS NOT NULL
                       AND g.status IN ('open','in_review')
+                      AND (gm.group_id IS NULL OR gg.status='candidate')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM knowledge_gap_group_members rejected_neighbour
+                        WHERE rejected_neighbour.gap_id=g.id
+                          AND rejected_neighbour.removed_at IS NOT NULL
+                          AND rejected_neighbour.assignment_source='candidate'
+                      )
                       AND NOT EXISTS (
                         SELECT 1
                         FROM knowledge_gap_group_members a
@@ -801,22 +821,112 @@ class GapMapService:
             conn.commit()
         return created
 
-    def list_groups(self, *, status: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
-        if status and status not in {"candidate", "open", "in_review", "resolved", "dismissed"}:
-            raise ValueError("Недопустимый статус группы")
-        limit = max(1, min(1000, int(limit)))
+    def _backfill_candidate_groups(self, limit: int = 1000) -> int:
+        """Materialize owner-review groups for any sufficiently similar stored gaps.
+
+        Do not depend on legacy cluster flags: older gaps can have good embeddings
+        without ever having received ``review_candidate`` metadata. Only pairs that
+        meet the configured cosine-similarity threshold are selected. Previously
+        detached pairs remain excluded by the membership-history check below and
+        by ``suggest_groups_for_gap_ids``.
+        """
+        from app.core.config import get_settings
+
+        limit = max(1, min(5000, int(limit)))
+        threshold = float(getattr(get_settings(), "knowledge_gap_review_threshold", 0.80))
+        if not 0.0 <= threshold <= 1.0:
+            threshold = 0.90
         with get_connection() as conn:
             self._ensure_schema(conn)
             rows = conn.execute(
                 """
-                SELECT g.id,g.title,g.representative_query,g.status,g.created_at,g.updated_at,g.resolved_at,
-                       COUNT(m.gap_id) FILTER (WHERE m.removed_at IS NULL) AS active_members,
-                       g.confirmed_by,g.confirmed_at
-                FROM knowledge_gap_groups g LEFT JOIN knowledge_gap_group_members m ON m.group_id=g.id
-                WHERE (%s::text IS NULL OR g.status=%s)
-                GROUP BY g.id ORDER BY CASE WHEN g.status='candidate' THEN 1 ELSE 0 END,
-                         g.updated_at DESC LIMIT %s
-                """, (status, status, limit),
+                SELECT g.id
+                FROM knowledge_gaps g
+                WHERE g.embedding IS NOT NULL
+                  AND g.status IN ('open','in_review')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM knowledge_gap_group_members active_member
+                    WHERE active_member.gap_id=g.id AND active_member.removed_at IS NULL
+                  )
+                  AND EXISTS (
+                    SELECT 1
+                    FROM knowledge_gaps neighbour
+                    LEFT JOIN knowledge_gap_group_members neighbour_member
+                      ON neighbour_member.gap_id=neighbour.id
+                     AND neighbour_member.removed_at IS NULL
+                    LEFT JOIN knowledge_gap_groups neighbour_group
+                      ON neighbour_group.id=neighbour_member.group_id
+                    WHERE neighbour.id<>g.id
+                      AND neighbour.embedding IS NOT NULL
+                      AND neighbour.status IN ('open','in_review')
+                      AND (neighbour_member.group_id IS NULL OR neighbour_group.status='candidate')
+                      AND 1-(neighbour.embedding <=> g.embedding) >= %s
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM knowledge_gap_group_members old_a
+                        JOIN knowledge_gap_group_members old_b
+                          ON old_a.group_id=old_b.group_id
+                        WHERE old_a.gap_id=g.id
+                          AND old_b.gap_id=neighbour.id
+                          AND (old_a.removed_at IS NOT NULL OR old_b.removed_at IS NOT NULL)
+                      )
+                  )
+                ORDER BY g.id
+                LIMIT %s
+                """,
+                (threshold, limit),
+            ).fetchall()
+            gap_ids = [int(row[0]) for row in rows]
+            conn.commit()
+        return self.suggest_groups_for_gap_ids(gap_ids) if gap_ids else 0
+
+    def list_groups(
+        self, *, status: str | None = None, limit: int = 500, gap_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if status and status not in {"candidate", "open", "in_review", "resolved", "dismissed"}:
+            raise ValueError("Недопустимый статус группы")
+        limit = max(1, min(1000, int(limit)))
+        if gap_id is not None and gap_id < 1:
+            raise ValueError("gap_id должен быть положительным")
+        self._backfill_candidate_groups()
+        with get_connection() as conn:
+            self._ensure_schema(conn)
+            rows = conn.execute(
+                """
+                SELECT
+                    g.id,
+                    g.title,
+                    g.representative_query,
+                    g.status,
+                    g.created_at,
+                    g.updated_at,
+                    g.resolved_at,
+                    COUNT(m.gap_id) FILTER (
+                        WHERE m.removed_at IS NULL
+                    ) AS active_members,
+                    g.confirmed_by,
+                    g.confirmed_at
+                FROM knowledge_gap_groups g
+                LEFT JOIN knowledge_gap_group_members m
+                    ON m.group_id = g.id
+                WHERE (%s::text IS NULL OR g.status = %s::text)
+                  AND (
+                    %s::bigint IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM knowledge_gap_group_members AS gap_filter
+                        WHERE gap_filter.group_id = g.id
+                          AND gap_filter.gap_id = %s::bigint
+                          AND gap_filter.removed_at IS NULL
+                    )
+                  )
+                GROUP BY g.id
+                ORDER BY
+                    CASE WHEN g.status = 'candidate' THEN 1 ELSE 0 END,
+                    g.updated_at DESC
+                LIMIT %s
+                """,
+                (status, status, gap_id, gap_id, limit),
             ).fetchall()
             result = []
             for r in rows:
@@ -910,6 +1020,50 @@ class GapMapService:
             conn.commit()
         return self.get_group(group_id) or {"id": group_id, "activeMemberCount": remaining}
 
+    def detach_cluster_suggestion(
+        self, gap_id: int, *, reason: str, author: str | None,
+    ) -> dict[str, Any]:
+        """Reject a legacy review_candidate link without deleting the gap or cluster."""
+        if not reason or not reason.strip():
+            raise ValueError("Для отвязки от кластера укажите причину")
+        with get_connection() as conn:
+            self._ensure_schema(conn)
+            row = conn.execute(
+                "SELECT suggested_cluster_id,similarity_score,cluster_match_type "
+                "FROM knowledge_gaps WHERE id=%s FOR UPDATE",
+                (gap_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("Пробел не найден")
+            suggested_cluster_id, similarity, match_type = row
+            if suggested_cluster_id is None or match_type != "review_candidate":
+                conn.commit()
+                return {"gapId": gap_id, "status": "not_attached"}
+            conn.execute(
+                """
+                INSERT INTO knowledge_gap_cluster_suggestion_history
+                    (gap_id,suggested_cluster_id,similarity_score,reason,author)
+                VALUES (%s,%s,%s,%s,%s)
+                """,
+                (gap_id, suggested_cluster_id, similarity, reason.strip()[:1000], author),
+            )
+            conn.execute(
+                """
+                UPDATE knowledge_gaps
+                SET suggested_cluster_id=NULL, similarity_score=NULL,
+                    cluster_match_type='detached', updated_at=NOW()
+                WHERE id=%s
+                """,
+                (gap_id,),
+            )
+            conn.commit()
+        return {
+            "gapId": gap_id,
+            "status": "detached",
+            "previousSuggestedClusterId": str(suggested_cluster_id),
+            "previousSimilarity": float(similarity) if similarity is not None else None,
+        }
+
     def resolve_group(
         self, group_id: int, *, member_ids: list[int] | None,
         note: str, author: str | None, idempotency_key: str,
@@ -998,7 +1152,7 @@ class GapMapService:
                        i.resolved_by,i.owner_comment,q.raw_question,q.resolved_query
                 FROM quality_issues i
                 LEFT JOIN conversation_query_context q ON q.query_id=i.query_id
-                WHERE (%s::text IS NULL OR i.status = %s) AND (%s::text IS NULL OR i.issue_code = %s)
+                WHERE (%s IS NULL OR i.status=%s) AND (%s IS NULL OR i.issue_code=%s)
                 ORDER BY i.created_at DESC LIMIT %s
                 """, (status, status, issue_code, issue_code, limit),
             ).fetchall()

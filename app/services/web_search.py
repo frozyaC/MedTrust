@@ -289,7 +289,7 @@ def _fallback_search_terms(query: str, domain: str | None = None) -> str:
     """
     # Russian clinical-guideline catalogs should receive the original Russian
     # query, while English-language sites benefit from an English fallback.
-    if domain and domain.lower().endswith(("minzdrav.gov.ru",)):
+    if domain and domain.lower().endswith(("minzdrav.gov.ru", "medsi.ru", "astromedic.ru")):
         return query.strip()
 
     topics = _topic_ids(query)
@@ -388,6 +388,41 @@ def _intent_ids(text: str) -> set[str]:
     }
 
 
+_PROCEDURE_PREPARATION_CUE_RE = re.compile(
+    r"fast(?:ing)?|fast\s+for|npo|nil\s+per\s+os|nothing\s+by\s+mouth|"
+    r"do\s+not\s+(?:eat|drink)|avoid\s+(?:food|eating|drinking)|no\s+food|no\s+drink|"
+    r"last\s+meal|clear\s+liquid|hours?\s+before|before\s+the\s+procedure|"
+    r"натощак|не\s+(?:есть|пить)|нельзя\s+(?:есть|пить)|последн\w*\s+(?:при[её]м|ед)|"
+    r"за\s+\d+\s*час|\d+\s*[-–—]\s*\d+\s*час|пищ\w*|жидкост\w*|курен\w*|"
+    r"перед\s+(?:процедур\w*|исследован\w*)",
+    re.IGNORECASE,
+)
+
+_PREPARATION_PROCEDURE_TOPICS = {
+    "gastroscopy", "ct_scan", "mri", "mri_scan", "colonoscopy", "ultrasound",
+}
+
+
+def has_procedure_specific_preparation_evidence(
+    query: str, *, title: str = "", content: str = ""
+) -> bool:
+    """Require the named procedure plus an explicit preparation instruction.
+
+    This accepts common English leaflet wording ("do not eat or drink", "nil by
+    mouth", "fast for ... hours") that the older Russian-centric preparation gate
+    did not recognize. It does not accept a page that only mentions the procedure.
+    """
+    query_topics = _topic_ids(query)
+    procedure_topics = query_topics.intersection(_PREPARATION_PROCEDURE_TOPICS)
+    if "preparation" not in _intent_ids(query) or not procedure_topics:
+        return True
+    source_text = f"{title}\n{content}"
+    source_topics = _topic_ids(source_text)
+    if not procedure_topics.intersection(source_topics):
+        return False
+    return bool(_PROCEDURE_PREPARATION_CUE_RE.search(source_text))
+
+
 def is_relevant_web_result(query: str, result: WebSearchResult) -> bool:
     """Conservatively reject safe-but-off-topic pages before answer generation.
 
@@ -453,7 +488,9 @@ def is_relevant_web_result(query: str, result: WebSearchResult) -> bool:
                 section="",
                 content=source_text,
             )
-            if preparation_problem:
+            if preparation_problem and not has_procedure_specific_preparation_evidence(
+                query, title=result.title, content=source_text
+            ):
                 return False
         return True
 
@@ -501,13 +538,24 @@ def has_answerable_web_evidence(query: str, result: WebSearchResult) -> bool:
 
     query_topics = _topic_ids(query)
     body_topics = _topic_ids(body)
+    procedure_preparation_evidence = bool(
+        "preparation" in _intent_ids(query)
+        and query_topics.intersection(_PREPARATION_PROCEDURE_TOPICS)
+        and has_procedure_specific_preparation_evidence(query, title=result.title, content=body)
+    )
+    if (
+        "preparation" in _intent_ids(query)
+        and query_topics.intersection(_PREPARATION_PROCEDURE_TOPICS)
+        and not procedure_preparation_evidence
+    ):
+        return False
     if (
         "biochemistry" in query_topics
         and "biochemistry" not in body_topics
         and "preparation" in _intent_ids(query)
     ):
         return False
-    if query_topics and not query_topics.intersection(body_topics):
+    if query_topics and not query_topics.intersection(body_topics) and not procedure_preparation_evidence:
         return False
 
     # The information type is checked across the complete result by
@@ -776,33 +824,56 @@ class SearXNGWebSearchClient:
         )
 
     def _request(self, query: str, timeout: int) -> list[dict] | None:
-        try:
-            response = requests.get(
-                f"{self.settings.searxng_url.rstrip('/')}/search",
-                params={
-                    "q": query[:600],
-                    "format": "json",
-                    "language": (
-                        "ru" if any(domain in query.lower() for domain in ("minzdrav.gov.ru", "cr.minzdrav.gov.ru"))
-                        else "en" if query.lstrip().lower().startswith("site:") or not re.search(r"[а-яё]", query, re.IGNORECASE)
-                        else self.settings.web_search_language
-                    ),
-                    "safesearch": 1,
-                    "categories": "general",
-                },
-                headers={"Accept": "application/json"},
-                timeout=timeout,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except requests.RequestException:
-            return None
-        except ValueError:
-            return None
+        """Query SearXNG with a minimal-parameter fallback.
 
-        raw = payload.get("results", [])
-        if not isinstance(raw, list):
-            return []
+        Preserve the existing language/SafeSearch/category request first. If that
+        succeeds technically but returns an empty result list, retry once using
+        the same minimal parameters as the known-working direct local API call
+        (q + format=json). The SearXNG instance keeps its own configured defaults
+        for language, SafeSearch and categories on the retry.
+        """
+        endpoint = f"{self.settings.searxng_url.rstrip('/')}/search"
+        timeout_value = max(6, int(timeout))
+        base_params = {
+            "q": query[:600],
+            "format": "json",
+            "language": (
+                "en" if query.lstrip().lower().startswith("site:")
+                and not any(domain in query.lower() for domain in ("minzdrav.gov.ru", "cr.minzdrav.gov.ru", "medsi.ru", "astromedic.ru"))
+                else self.settings.web_search_language
+            ),
+            "safesearch": 1,
+            "categories": "general",
+        }
+
+        def fetch(params: dict) -> list[dict] | None:
+            try:
+                response = requests.get(
+                    endpoint,
+                    params=params,
+                    headers={"Accept": "application/json"},
+                    timeout=timeout_value,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except requests.RequestException:
+                return None
+            except (TypeError, ValueError):
+                return None
+            raw = payload.get("results", []) if isinstance(payload, dict) else []
+            return raw if isinstance(raw, list) else []
+
+        raw = fetch(base_params)
+        if raw:
+            return raw
+
+        # A zero-result response is not necessarily a provider outage: forced
+        # language/category parameters can narrow a local instance to no results.
+        # Retry once with instance defaults, matching the direct API check.
+        minimal_params = {"q": query[:600], "format": "json"}
+        fallback = fetch(minimal_params)
+        if fallback is not None:
+            return fallback
         return raw
 
     def _parse_safe_results(
@@ -1037,7 +1108,13 @@ class SearXNGWebSearchClient:
             fallback_domains = tuple(sorted(LOCAL_DISCOVERY_SAFE_DOMAINS))
         elif preparation_or_lab_query:
             topics = _topic_ids(query)
-            if "ct_scan" in topics or "gastroscopy" in topics or "mri" in topics:
+            if "gastroscopy" in topics:
+                medical_preparation_domains = (
+                    "medsi.ru", "astromedic.ru", "nhs.uk", "medlineplus.gov",
+                    "cr.minzdrav.gov.ru", "mayoclinic.org", "msdmanuals.com",
+                    "nice.org.uk", "radiologyinfo.org",
+                )
+            elif "ct_scan" in topics or "mri" in topics:
                 medical_preparation_domains = (
                     "radiologyinfo.org", "nhs.uk", "medlineplus.gov", "cr.minzdrav.gov.ru",
                     "cancer.gov", "mayoclinic.org", "msdmanuals.com", "nice.org.uk",
