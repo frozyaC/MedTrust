@@ -198,11 +198,13 @@ def list_knowledge_gaps(
     date_to: date | None = None,
     sort: str = "recent",
     limit: int = 500,
+    gap_id: int | None = None,
 ) -> list[dict]:
     try:
         return GapMapService().list_gaps(
             status=status, source=source, reason_code=reason_code,
             date_from=date_from, date_to=date_to, sort=sort, limit=limit,
+            gap_id=gap_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

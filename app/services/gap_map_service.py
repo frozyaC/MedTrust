@@ -582,6 +582,7 @@ class GapMapService:
         self, *, status: str | None = None, source: str | None = None,
         reason_code: str | None = None, date_from: date | None = None,
         date_to: date | None = None, sort: str = "recent", limit: int = 500,
+        gap_id: int | None = None,
     ) -> list[dict[str, Any]]:
         if status and status not in GAP_STATUSES:
             raise ValueError("Недопустимый status")
@@ -591,6 +592,10 @@ class GapMapService:
             raise ValueError("Недопустимый sort")
         limit = max(1, min(1000, int(limit)))
         where, params = [], []
+        if gap_id is not None:
+            if gap_id < 1:
+                raise ValueError("gap_id должен быть положительным")
+            where.append("g.id=%s"); params.append(gap_id)
         if status:
             where.append("g.status=%s"); params.append(status)
         if source:
@@ -722,6 +727,14 @@ class GapMapService:
             raise ValueError("Недопустимый статус пробела")
         with get_connection() as conn:
             self._ensure_schema(conn)
+            # Group operations lock the group before its gaps. Use the same order
+            # here so a concurrent confirmation cannot deadlock with a status edit.
+            memberships = conn.execute(
+                "SELECT group_id FROM knowledge_gap_group_members WHERE gap_id=%s AND removed_at IS NULL ORDER BY group_id",
+                (gap_id,),
+            ).fetchall()
+            for membership in memberships:
+                conn.execute("SELECT id FROM knowledge_gap_groups WHERE id=%s FOR UPDATE", (membership[0],))
             row = conn.execute("SELECT status FROM knowledge_gaps WHERE id=%s FOR UPDATE", (gap_id,)).fetchone()
             if not row:
                 return False
@@ -933,15 +946,19 @@ class GapMapService:
                 members = self._group_members(conn, int(r[0]))
                 if len(members) < 2:
                     continue
-                result.append({
-                    "id": int(r[0]), "title": r[1], "representativeQuery": r[2],
-                    "status": r[3], "activeMemberCount": int(r[7]),
-                    "createdAt": r[4].isoformat(), "updatedAt": r[5].isoformat(),
-                    "resolvedAt": r[6].isoformat() if r[6] else None,
-                    "confirmedBy": r[8], "confirmedAt": r[9].isoformat() if r[9] else None,
-                    "members": members,
-                })
+                result.append(self._group_payload(r, members))
         return result
+
+    @staticmethod
+    def _group_payload(row: Any, members: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "id": int(row[0]), "title": row[1], "representativeQuery": row[2],
+            "status": row[3], "activeMemberCount": int(row[7]),
+            "createdAt": row[4].isoformat(), "updatedAt": row[5].isoformat(),
+            "resolvedAt": row[6].isoformat() if row[6] else None,
+            "confirmedBy": row[8], "confirmedAt": row[9].isoformat() if row[9] else None,
+            "members": members,
+        }
 
     @staticmethod
     def _group_members(conn: Any, group_id: int) -> list[dict[str, Any]]:
@@ -962,8 +979,19 @@ class GapMapService:
         } for r in rows]
 
     def get_group(self, group_id: int) -> dict[str, Any] | None:
-        groups = self.list_groups(limit=1000)
-        return next((group for group in groups if group["id"] == group_id), None)
+        with get_connection() as conn:
+            self._ensure_schema(conn)
+            row = conn.execute(
+                """
+                SELECT g.id, g.title, g.representative_query, g.status,
+                       g.created_at, g.updated_at, g.resolved_at,
+                       (SELECT COUNT(*) FROM knowledge_gap_group_members m
+                        WHERE m.group_id=g.id AND m.removed_at IS NULL),
+                       g.confirmed_by, g.confirmed_at
+                FROM knowledge_gap_groups g WHERE g.id=%s
+                """, (group_id,),
+            ).fetchone()
+            return self._group_payload(row, self._group_members(conn, group_id)) if row else None
 
     def confirm_group(self, group_id: int, *, member_ids: list[int] | None, author: str | None) -> dict[str, Any]:
         with get_connection() as conn:
@@ -974,13 +1002,21 @@ class GapMapService:
             if group[0] != "candidate":
                 raise ValueError("Подтверждать можно только группу-кандидат")
             candidates = conn.execute(
-                "SELECT gap_id FROM knowledge_gap_group_members WHERE group_id=%s AND removed_at IS NULL ORDER BY gap_id FOR UPDATE",
+                """
+                SELECT m.gap_id, g.status
+                FROM knowledge_gap_group_members m JOIN knowledge_gaps g ON g.id=m.gap_id
+                WHERE m.group_id=%s AND m.removed_at IS NULL
+                ORDER BY m.gap_id FOR UPDATE OF m, g
+                """,
                 (group_id,),
             ).fetchall()
             all_ids = [int(r[0]) for r in candidates]
             selected = sorted(set(member_ids if member_ids is not None else all_ids))
             if len(selected) < 2 or not set(selected).issubset(set(all_ids)):
                 raise ValueError("Для подтверждения выберите минимум два участника из предложения")
+            statuses = {int(row[0]): row[1] for row in candidates}
+            if any(statuses[gap_id] not in {"open", "in_review"} for gap_id in selected):
+                raise ValueError("Состав предложения изменился: обновите данные и выберите открытые пробелы")
             for gap_id in all_ids:
                 if gap_id not in selected:
                     conn.execute(
@@ -1003,6 +1039,10 @@ class GapMapService:
             raise ValueError("Укажите причину отвязки")
         with get_connection() as conn:
             self._ensure_schema(conn)
+            if not conn.execute(
+                "SELECT id FROM knowledge_gap_groups WHERE id=%s FOR UPDATE", (group_id,),
+            ).fetchone():
+                raise ValueError("Группа не найдена")
             cur = conn.execute(
                 "UPDATE knowledge_gap_group_members SET removed_at=NOW(),removed_by=%s,removal_reason=%s WHERE group_id=%s AND gap_id=%s AND removed_at IS NULL",
                 (author, reason[:1000], group_id, gap_id),
@@ -1014,7 +1054,7 @@ class GapMapService:
                 (group_id,),
             ).fetchone()[0]
             if remaining < 2:
-                conn.execute("UPDATE knowledge_gap_groups SET status='dismissed',updated_at=NOW() WHERE id=%s", (group_id,))
+                conn.execute("UPDATE knowledge_gap_groups SET status='dismissed',updated_at=NOW(),resolved_at=NOW() WHERE id=%s", (group_id,))
             else:
                 self._refresh_group(conn, group_id)
             conn.commit()
@@ -1076,6 +1116,8 @@ class GapMapService:
         payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         with get_connection() as conn:
             self._ensure_schema(conn)
+            # Serialize retries, including concurrent first requests with the same key.
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (idempotency_key,))
             existing = conn.execute(
                 "SELECT group_id,payload_hash,result FROM knowledge_gap_group_operations WHERE idempotency_key=%s FOR UPDATE",
                 (idempotency_key,),
@@ -1084,21 +1126,29 @@ class GapMapService:
                 if int(existing[0]) != group_id or existing[1] != payload_hash:
                     raise ValueError("idempotency_key уже использован для другой операции")
                 return _json(existing[2], {})
-            group = conn.execute("SELECT status FROM knowledge_gap_groups WHERE id=%s FOR UPDATE", (group_id,)).fetchone()
-            if not group or group[0] not in {"open", "in_review"}:
+            group = conn.execute("SELECT status, confirmed_at FROM knowledge_gap_groups WHERE id=%s FOR UPDATE", (group_id,)).fetchone()
+            if not group or group[0] not in {"open", "in_review"} or group[1] is None:
                 raise ValueError("Закрывать можно только подтвержденную активную группу")
             active = conn.execute(
-                "SELECT gap_id FROM knowledge_gap_group_members WHERE group_id=%s AND removed_at IS NULL ORDER BY gap_id FOR UPDATE",
+                """
+                SELECT m.gap_id, g.status
+                FROM knowledge_gap_group_members m JOIN knowledge_gaps g ON g.id=m.gap_id
+                WHERE m.group_id=%s AND m.removed_at IS NULL
+                ORDER BY m.gap_id FOR UPDATE OF m, g
+                """,
                 (group_id,),
             ).fetchall()
             all_ids = [int(r[0]) for r in active]
-            selected = sorted(set(member_ids if member_ids is not None else all_ids))
+            open_ids = [int(row[0]) for row in active if row[1] in {"open", "in_review"}]
+            selected = sorted(set(member_ids if member_ids is not None else open_ids))
             if not selected or not set(selected).issubset(set(all_ids)):
                 raise ValueError("Выберите активных участников этой группы")
             for gap_id in selected:
                 old = conn.execute("SELECT status FROM knowledge_gaps WHERE id=%s FOR UPDATE", (gap_id,)).fetchone()
                 if not old:
-                    continue
+                    raise ValueError("Состав группы изменился: обновите данные")
+                if old[0] not in {"open", "in_review"}:
+                    raise ValueError("Статус пробела изменился: обновите данные и выберите незакрытые пробелы")
                 conn.execute(
                     "UPDATE knowledge_gaps SET status='resolved',updated_at=NOW(),resolved_at=NOW(),resolved_by=%s,owner_comment=%s WHERE id=%s",
                     (author, note[:2000], gap_id),
@@ -1133,7 +1183,11 @@ class GapMapService:
         status = _group_status(statuses)
         resolved_at = "NOW()" if status in {"resolved", "dismissed"} else "NULL"
         conn.execute(
-            f"UPDATE knowledge_gap_groups SET status=%s,updated_at=NOW(),resolved_at={resolved_at} WHERE id=%s",
+            f"""UPDATE knowledge_gap_groups
+                SET status=CASE WHEN status='candidate' THEN 'candidate' ELSE %s END,
+                    updated_at=NOW(),
+                    resolved_at=CASE WHEN status='candidate' THEN NULL ELSE {resolved_at} END
+                WHERE id=%s""",
             (status, group_id),
         )
 
