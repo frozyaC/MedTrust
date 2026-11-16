@@ -1,5 +1,10 @@
 .env
+.env.*
+!.env.example
+!.env.withoutkeys
 check.ipynb
 reports/
-__pycache__
-.vscode
+__pycache__/
+.pytest_cache/
+.vscode/
+tests/evaluation/reports/

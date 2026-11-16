@@ -30,6 +30,16 @@ from app.services.source_relevance import (
     requires_fresh_clinical_search,
     requires_topic_specific_clinical_evidence,
 )
+from app.services.langsmith_tracing import (
+    traceable_span,
+    trace_answer_inputs,
+    trace_answer_outputs,
+    trace_retrieval_inputs,
+    trace_retrieval_outputs,
+    trace_prompt_inputs,
+    trace_prompt_outputs,
+    trace_selected_context_docs,
+)
 from app.services.web_search import (
     SearXNGWebSearchClient,
     WebSearchResponse,
@@ -283,6 +293,12 @@ class RagService:
                 parts.append(f"Анамнез: {patient['anamnesis']}")
         return "\n".join(parts)
 
+    @traceable_span(
+        name="Dense vector + lexical + path search",
+        run_type="retriever",
+        process_inputs=trace_retrieval_inputs,
+        process_outputs=trace_retrieval_outputs,
+    )
     def search(self, question: str, patient: dict | None, top_k: int) -> list[dict]:
         retrieval_query = self._retrieval_query(question, patient)
         return self.repository.hybrid_search(retrieval_query, self.embeddings.embed_one(retrieval_query), top_k)
@@ -465,6 +481,12 @@ class RagService:
             str(doc.get("content") or "")[:180].casefold(),
         ))
 
+    @traceable_span(
+        name="MedTrust hybrid retrieval",
+        run_type="retriever",
+        process_inputs=trace_retrieval_inputs,
+        process_outputs=trace_retrieval_outputs,
+    )
     def _search_question_aspects(
         self, question: str, patient: dict | None, top_k: int
     ) -> tuple[list[dict], list[str]]:
@@ -3243,6 +3265,12 @@ class RagService:
         return result
 
     @staticmethod
+    @traceable_span(
+        name="MedTrust RAG context preparation",
+        run_type="chain",
+        process_inputs=trace_prompt_inputs,
+        process_outputs=trace_prompt_outputs,
+    )
     def _build_prompt(
         question: str,
         patient: dict | None,
@@ -3263,6 +3291,7 @@ class RagService:
         selected_docs = RagService._wiki_sufficient_docs(
             docs, question=retrieval_question, facets=retrieval_queries
         )
+        trace_selected_context_docs(selected_docs)
 
         for idx, doc in enumerate(selected_docs, start=1):
             blocks.append(
@@ -3756,6 +3785,12 @@ class RagService:
             attempted_queries=attempted,
         )
 
+    @traceable_span(
+        name="MedTrust RAG query",
+        run_type="chain",
+        process_inputs=trace_answer_inputs,
+        process_outputs=trace_answer_outputs,
+    )
     def answer(self, question: str, patient: dict | None, top_k: int, conversation_id: str | None = None) -> dict:
         review_diagnostics = self._answer_review_diagnostics()
         query_id = str(uuid.uuid4())
