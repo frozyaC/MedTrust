@@ -428,3 +428,22 @@ python -m pytest tests/test_knowledge_gap_clustering.py tests/security/test_prom
 ## LangSmith tracing и retrieval evaluation
 
 Инструкция по подключению облачного трейсинга, безопасной конфигурации, импорту Golden Set v1 и расчёту Precision@K / Recall@K / MRR@K / nDCG@K: [docs/LANGSMITH.md](docs/LANGSMITH.md).
+
+Рассчет метрик после отображения трассировки в LangSmith
+
+```powershell
+$runId = "ВСТАВЬТЕ_ROOT_RUN_ID"
+
+python scripts\publish_retrieval_metrics.py `
+    --run-id $runId `
+    --k 5 `
+    --dry-run
+```
+
+Отправка метрик в LangSmith
+
+```powershell
+python scripts\publish_retrieval_metrics.py `
+    --run-id $runId `
+    --k 5
+```
