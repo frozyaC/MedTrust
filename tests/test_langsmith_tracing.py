@@ -49,3 +49,20 @@ def test_langsmith_prompt_redacts_history_and_patient_context():
     assert "private transcript" not in safe
     assert "private patient json" not in safe
     assert "public wiki source" in safe
+
+
+def test_langsmith_answer_trace_records_local_only_search_policy():
+    traced = tracing._trace_answer_outputs({
+        "answer": "Данных может быть недостаточно.",
+        "retrieval": [],
+        "sources": [],
+        "answer_review_diagnostics": {},
+        "search_backend": "local_wiki_only",
+        "web_search_policy": "disabled_for_query_endpoint",
+        "web_search_attempted": False,
+        "web_search_status": "disabled_for_query_endpoint",
+        "web_search_used": False,
+    })
+    assert traced["search_backend"] == "local_wiki_only"
+    assert traced["web_search_policy"] == "disabled_for_query_endpoint"
+    assert traced["web_search_attempted"] is False

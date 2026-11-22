@@ -33,8 +33,6 @@ def test_low_score_wiki_candidates_are_not_discarded(monkeypatch):
 def test_gastroscopy_query_reaches_wiki_retrieval_and_answer_generation(monkeypatch):
     from types import SimpleNamespace
 
-    from app.services.web_search import WebSearchResponse
-
     class Settings:
         web_min_wiki_dense_similarity = 0.62
         memory_follow_up_max_chars = 300
@@ -95,6 +93,16 @@ def test_gastroscopy_query_reaches_wiki_retrieval_and_answer_generation(monkeypa
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
     service.gigachat = FakeGigaChat()
+    service.contextualizer = SimpleNamespace(resolve=lambda **kwargs: SimpleNamespace(
+        resolved_query=kwargs["current_question"],
+        clarification_required=False,
+        clarification_question=None,
+        llm_attempted=False,
+        intent="new_question",
+        confidence=1.0,
+        as_dict=lambda: {"resolved_query": kwargs["current_question"], "intent": "new_question"},
+    ))
+    service.knowledge_gap_tracker = SimpleNamespace(record_gap=lambda **kwargs: None)
     search_calls = []
 
     def fake_search(question, patient, top_k):
@@ -103,23 +111,23 @@ def test_gastroscopy_query_reaches_wiki_retrieval_and_answer_generation(monkeypa
 
     service.search = fake_search
     service.web_search = SimpleNamespace(
-        search=lambda *args, **kwargs: WebSearchResponse("empty", [])
+        search=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("/api/v1/query must not invoke web search")
+        )
     )
 
     result = service.answer("Как подготовиться к гастроскопии", None, 5)
 
     assert search_calls == [("Как подготовиться к гастроскопии", None, 15)]
-    assert "Подготовка к гастроскопии" in result["answer"]
-    assert "Не удалось подтвердить этот пункт" not in result["answer"]
+    # The candidate is visible for diagnostics, but its generic content is not
+    # sufficient evidence for preparation instructions. The route must fail closed.
     assert result["retrieval"][0]["title"] == "Подготовка к гастроскопии"
-    # The Wiki candidate is visible in retrieval diagnostics but is not promoted to
-    # a confirmed answer source because it contains no actual preparation instructions.
-    assert result["sources"]
-    assert all(source["source_type"] == "search_link" for source in result["sources"])
+    assert result["search_backend"] == "local_wiki_only"
+    assert result["web_search_attempted"] is False
+    assert result["web_search_used"] is False
+    assert result["web_search_policy"] == "disabled_for_query_endpoint"
+    assert result["web_search_status"] == "disabled_for_query_endpoint"
+    assert result["sources"] == []
     assert result["source_checks_passed"] is False
-    # The title matches the topic, but the passage only contains generic guidance.
-    # It must not be promoted to an evidence source or put in the generation context.
-    assert result["answer_reviewed"] is True
-    assert result["source_checks_passed"] is False  # Preparation details are not in the source.
-    assert "Общие сведения о подготовке к гастроскопии" not in service.gigachat.prompts[0]
-    assert result["resource_usage"]["gigachat_calls"] == 1
+    assert result["resource_usage"]["gigachat_calls"] == 0
+    assert "WEB1" not in result["answer"]

@@ -182,6 +182,9 @@ def _trace_answer_outputs(outputs: Any) -> dict[str, Any]:
             for item in sources if isinstance(item, dict)
         ],
         "used_source_ids": diagnostics.get("used_source_ids") or [],
+        "search_backend": outputs.get("search_backend"),
+        "web_search_policy": outputs.get("web_search_policy"),
+        "web_search_attempted": outputs.get("web_search_attempted"),
         "web_search_status": outputs.get("web_search_status"),
         "web_search_used": outputs.get("web_search_used"),
         "resource_usage": outputs.get("resource_usage") or {},

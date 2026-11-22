@@ -83,15 +83,11 @@ def test_topic_specific_clinical_evidence_rejects_generic_or_unrelated_wiki_text
     assert has_topic_specific_clinical_evidence(QUESTION, relevant)
 
 
-def test_answer_triggers_web_fallback_and_does_not_pass_without_web_evidence(monkeypatch):
+def test_answer_does_not_fallback_to_web_when_local_evidence_is_missing(monkeypatch):
+    from types import SimpleNamespace
+
     class Settings:
         memory_follow_up_max_chars = 300
-        rag_max_wiki_sources = 3
-        rag_max_web_sources = 3
-        rag_max_source_chars = 4200
-        rag_max_history_messages = 4
-        rag_max_history_message_chars = 600
-        web_min_wiki_dense_similarity = 0.62
         gigachat_max_tokens = 450
 
     monkeypatch.setattr("app.services.rag.get_settings", lambda: Settings())
@@ -99,69 +95,53 @@ def test_answer_triggers_web_fallback_and_does_not_pass_without_web_evidence(mon
     class FakeMemory:
         def __init__(self):
             self.messages = []
-
         def ensure_conversation(self, conversation_id):
             return conversation_id or "conversation-test"
-
         def build_context(self, conversation_id):
             return {"summary": "", "messages": []}
-
         def add_message(self, conversation_id, role, content, **kwargs):
             self.messages.append((role, content, kwargs))
-
         def all_messages_count(self, conversation_id):
             return sum(role == "user" for role, _, _ in self.messages)
-
         def update_title(self, conversation_id, title):
             pass
 
+    class FakeContextualizer:
+        def resolve(self, **kwargs):
+            question = kwargs["current_question"]
+            return SimpleNamespace(
+                resolved_query=question, clarification_required=False,
+                clarification_question=None, llm_attempted=False,
+                intent="new_question", confidence=1.0,
+                as_dict=lambda: {"resolved_query": question},
+            )
+
+    class ForbiddenWebSearch:
+        def search(self, *args, **kwargs):
+            raise AssertionError("Main /query endpoint attempted internet search")
+
     class FakeGigaChat:
         last_usage = {}
-
         def chat(self, prompt):
-            return "Мигрень диагностируется по физикальному осмотру. [W1]"
+            raise AssertionError("No local source: GigaChat must not invent an answer")
 
-    class FakeWebSearch:
-        def __init__(self):
-            self.queries = []
-
-        def search(self, query, limit=3):
-            self.queries.append((query, limit))
-            return WebSearchResponse("no_relevant_results", [])
-
-    unrelated_doc = {
-        "chunk_id": "administrative-doc",
-        "document_id": "administrative-doc",
-        "title": "ВОЗРАЖЕНИЯ (скрипты ответа)",
-        "wiki_path": "Регистратура/Скрипты/Возражения",
-        "section": "Срок давности назначений истек",
-        "path_segments": ["Регистратура", "Скрипты", "Возражения"],
-        "source_url": None,
-        "content": "Для получения свежих рекомендаций пациенту нужно повторно обратиться к специалисту.",
-        "dense_similarity": 0.99,
-        "rrf_score": 0.99,
-        "dense_rank": 1,
-        "lexical_rank": 1,
-        "path_rank": 1,
-    }
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
+    service.contextualizer = FakeContextualizer()
+    service.knowledge_gap_tracker = SimpleNamespace(record_gap=lambda **kwargs: None)
     service.gigachat = FakeGigaChat()
-    service.embeddings = SimpleNamespace(last_usage={})
-    service.web_search = FakeWebSearch()
-    service._search_question_aspects = lambda question, patient, top_k: ([unrelated_doc], [question])
-    monkeypatch.setattr(RagService, "_build_prompt", staticmethod(lambda *args, **kwargs: "test prompt"))
+    service.web_search = ForbiddenWebSearch()
+    service._search_question_aspects = lambda question, patient, top_k: ([], [question])
 
     result = service.answer(QUESTION, None, 5)
 
-    assert service.web_search.queries
-    assert result["web_search_attempted"] is True
+    assert result["web_search_attempted"] is False
     assert result["web_search_used"] is False
-    assert result["web_search_status"] == "no_relevant_results"
-    assert result["web_search_decision_reasons"][QUESTION] == "fresh_clinical_guidance_requires_online_verification"
-    assert result["answer"] == "нужные данные не найдены"
-    assert result["source_checks_passed"] is False
+    assert result["web_search_status"] == "disabled_for_query_endpoint"
+    assert result["web_search_policy"] == "disabled_for_query_endpoint"
     assert result["sources"] == []
+    assert result["source_checks_passed"] is False
+    assert result["resource_usage"]["gigachat_calls"] == 0
 
 
 def test_prompt_uses_previous_turn_as_context_but_not_as_source(monkeypatch):
