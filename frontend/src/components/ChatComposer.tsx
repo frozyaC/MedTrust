@@ -5,10 +5,14 @@ interface ChatComposerProps {
   isLoading: boolean;
   suggestion: string;
   onSend: (query: string) => void;
+  questionInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
-export const ChatComposer: React.FC<ChatComposerProps> = ({ isLoading, suggestion, onSend }) => {
+export const ChatComposer: React.FC<ChatComposerProps> = ({ isLoading, suggestion, onSend, questionInputRef }) => {
   const [query, setQuery] = useState('');
+  
+  const internalInputRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = questionInputRef ?? internalInputRef;
 
   useEffect(() => {
     if (suggestion) setQuery(suggestion);
@@ -30,6 +34,7 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({ isLoading, suggestio
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Задайте уточняющий вопрос..."
             className="w-full pl-4 pr-10 py-3 text-sm text-[#0F172A] bg-white border border-[#BFDBFE] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#3B82F6] focus:border-transparent transition-all placeholder:text-[#94A3B8]"
+            ref={inputRef}
           />
           <Sparkles className="w-4 h-4 text-[#3B82F6] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none opacity-60" />
         </div>

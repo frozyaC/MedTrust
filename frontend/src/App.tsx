@@ -209,9 +209,12 @@ export default function App() {
   } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [suggestion, setSuggestion] = useState('');
+  const [focusQuestionOnMount, setFocusQuestionOnMount] = useState(false);
   const [openSource, setOpenSource] = useState<Source | null>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
   const sidebarSearchRef = useRef<HTMLInputElement>(null);
+  const questionInputRef = useRef<HTMLInputElement>(null);
+  const followUpInputRef = useRef<HTMLInputElement>(null);
   const [sidebarHighlighted, setSidebarHighlighted] = useState(false);
 
   const threadKey = selectedPatient?.id ?? UNASSIGNED_THREAD;
@@ -221,6 +224,80 @@ export default function App() {
   const isLoading = latestItem?.status === 'loading';
   const latestCompleted = latestItem && latestItem.status !== 'loading';
   const messageCount = currentThread.length * 2;
+
+  const questionPresets = useMemo(
+    () => popularQuestions.categories.flatMap((category) => category.presets),
+    [popularQuestions],
+  );
+
+  // Горячие клавиши Alt+1–9, Alt+Z и Alt+X
+  useEffect(() => {
+    const handleKeyboardShortcuts = (event: KeyboardEvent) => {
+      if (
+        !event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        hasThread === undefined
+      ) {
+        return;
+      }
+
+      const target = event.target;
+
+      // Не перехватываем клавиши, когда открыто модальное окно
+      if (
+        target instanceof HTMLElement &&
+        target.closest('[role="dialog"]')
+      ) {
+        return;
+      }
+
+      // Alt+Z — фокус на поиск пациента
+      if (event.code === 'KeyZ') {
+        event.preventDefault();
+        sidebarSearchRef.current?.focus();
+        return;
+      }
+
+      // Alt+X — фокус на поле вопроса или уточнения
+      if (event.code === 'KeyX') {
+        event.preventDefault();
+
+        if (hasThread) {
+          followUpInputRef.current?.focus();
+        } else {
+          questionInputRef.current?.focus();
+        }
+
+        return;
+      }
+
+      // Alt+1–9 — вставка шаблона
+      const match = event.code.match(/^(?:Digit|Numpad)([1-9])$/);
+      if (!match) return;
+
+      const shortcut = match[1];
+
+      const preset =
+        questionPresets.find((item) => item.shortcut === shortcut) ??
+        questionPresets[Number(shortcut) - 1];
+
+      if (!preset) return;
+
+      event.preventDefault();
+
+      setSuggestion('');
+      window.setTimeout(() => setSuggestion(preset.value), 0);
+    };
+
+    window.addEventListener('keydown', handleKeyboardShortcuts);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyboardShortcuts);
+    };
+  }, [hasThread, questionPresets]);
+
 
   useEffect(() => {
     if (!hasThread || !latestItem) return;
@@ -613,13 +690,14 @@ export default function App() {
     setThreads((current) => ({ ...current, [threadKey]: [] }));
     dropConversationIds(threadKey, UNASSIGNED_THREAD);
     setSelectedPatient(null);
+    setSuggestion('');
+    setFocusQuestionOnMount(true);
     setScreenState('empty');
     setToastMessage('Новый диалог. Выберите пациента и задайте вопрос.');
   };
 
   /**
-   * Демо-режим для StateSelector. Использует `demoItem` / `makeDemoAnswer` —
-   * локальные моки, не бэк. Реальные ответы идут только через `handleAskQuestion`.
+   * Демо-режим для StateSelector. Использует `demoItem` / `makeDemoAnswer`
    */
   const selectDemoState = (state: ScreenState) => {
     setScreenState(state);
@@ -704,18 +782,35 @@ export default function App() {
               {cat.name}
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {cat.presets.map((preset) => (
-                <button
-                  key={preset.id}
-                  onClick={() => {
-                    setSuggestion('');
-                    window.setTimeout(() => setSuggestion(preset.value), 0);
-                  }}
-                  className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left"
-                >
-                  + {preset.label}
-                </button>
-              ))}
+              {cat.presets.map((preset) => {
+                const shortcutIndex = questionPresets.findIndex(
+                  (item) => item.id === preset.id,
+                );
+
+                return (
+                  <button
+                    key={preset.id}
+                    onClick={() => {
+                      setSuggestion('');
+                      window.setTimeout(() => setSuggestion(preset.value), 0);
+                    }}
+                    title={
+                      shortcutIndex < 9
+                        ? `Вставить шаблон (Alt+${shortcutIndex + 1})`
+                        : 'Вставить шаблон'
+                    }
+                    className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left flex items-center justify-between gap-2"
+                  >
+                    <span>+ {preset.label}</span>
+
+                    {shortcutIndex >= 0 && shortcutIndex < 9 && (
+                      <kbd className="shrink-0 px-1.5 py-0.5 rounded bg-white border border-[#BFDBFE] text-[10px] text-[#64748B]">
+                        Alt+{shortcutIndex + 1}
+                      </kbd>
+                    )}
+                  </button>
+                );
+              })}
               {cat.presets.length === 0 && (
                 <p className="col-span-2 text-[11px] text-[#94A3B8] px-1">
                   В этой категории нет заготовок
@@ -726,7 +821,7 @@ export default function App() {
         ))}
       </div>
     ),
-    [popularQuestions],
+    [popularQuestions, questionPresets],
   );
 
   if (!isAuthenticated) {
@@ -751,6 +846,8 @@ export default function App() {
           <main className="flex-1 overflow-y-auto p-6 space-y-4 max-w-[1120px] mx-auto">
             <SearchBar
               selectedPatient={selectedPatient}
+              questionInputRef={questionInputRef}
+              autoFocusQuestion={focusQuestionOnMount}
               onAsk={handleAskQuestion}
               onSelectPatientClick={handleChangePatient}
               onClearPatient={() => handleSelectPatient(null)}
@@ -970,6 +1067,7 @@ export default function App() {
             <ChatComposer
               isLoading={isLoading}
               suggestion={suggestion}
+              questionInputRef={followUpInputRef}
               onSend={handleAskQuestion}
             />
           </main>

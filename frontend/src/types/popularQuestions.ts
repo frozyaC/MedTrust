@@ -12,6 +12,7 @@ export interface PopularQuestionPreset {
   value: string;
   /** Текст на кнопке (обычно с «...» в конце) */
   label: string;
+  shortcut?: string;
 }
 
 export interface PopularQuestionCategory {

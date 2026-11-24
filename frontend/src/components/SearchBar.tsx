@@ -10,19 +10,24 @@ interface SearchBarProps {
   isLoading: boolean;
   suggestion?: string;
   onSuggestionConsumed?: () => void;
+  autoFocusQuestion?: boolean;
+  questionInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
 export const SearchBar: React.FC<SearchBarProps> = ({
   selectedPatient,
   onAsk,
+  autoFocusQuestion,
   onSelectPatientClick,
   onClearPatient,
   isLoading,
   suggestion,
   onSuggestionConsumed,
+  questionInputRef,
 }) => {
   const [query, setQuery] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const internalInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = questionInputRef ?? internalInputRef;
 
   useEffect(() => {
     if (suggestion) {
@@ -38,6 +43,16 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       }, 0);
     }
   }, [suggestion, onSuggestionConsumed]);
+
+  useEffect(() => {
+    if (!autoFocusQuestion) return;
+
+    const timer = window.setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [autoFocusQuestion]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
