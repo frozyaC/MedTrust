@@ -1,5 +1,5 @@
 import React from 'react';
-import { HelpCircle, BookOpen, LogOut } from 'lucide-react';
+import { HelpCircle, BookOpen, LogOut, Map } from 'lucide-react';
 
 interface HeaderProps {
   onLogout?: () => void;
@@ -47,6 +47,16 @@ export const Header: React.FC<HeaderProps> = ({ onLogout }) => {
 
       {/* Right section: Role, Name, Help, Avatar */}
       <div className="flex items-center gap-4">
+        <button
+          type="button"
+          onClick={() => window.location.assign('/admin/knowledge-gaps')}
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[#2563EB] hover:bg-[#EFF6FF] transition-colors"
+          title="Перейти к карте пробелов"
+        >
+          <Map className="w-4 h-4" />
+          Карта пробелов
+        </button>
+
         <div className="text-right">
           <div className="text-xs text-[#94A3B8] font-medium">Регистратор</div>
           <div className="text-sm font-semibold text-[#0F172A]">Иванова М.А.</div>

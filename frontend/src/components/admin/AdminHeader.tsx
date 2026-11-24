@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, HelpCircle, LogOut } from 'lucide-react';
+import { Check, ChevronDown, HelpCircle, LogOut, ArrowLeft } from 'lucide-react';
 import { AdminRole } from '../../types/knowledgeGaps';
 import { DEMO_ADMIN_USER, DEMO_DEVELOPER_USER } from '../../data/knowledgeGaps';
 
@@ -80,6 +80,16 @@ export function AdminHeader({ role, onRoleChange, onLogout }: AdminHeaderProps) 
       </div>
 
       <div className="flex shrink-0 items-center gap-3">
+        <button
+          type="button"
+          onClick={() => window.location.assign('/')}
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-med-primary hover:bg-med-primary-light transition-colors"
+          title="Вернуться к регистратору"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Регистратор
+        </button>
+
         <div className="relative" ref={menuRef}>
           <button
             type="button"
