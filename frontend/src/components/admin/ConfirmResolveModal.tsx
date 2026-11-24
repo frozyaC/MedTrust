@@ -8,9 +8,10 @@ interface ConfirmResolveModalProps {
   gap: KnowledgeGap;
   onClose: () => void;
   onConfirm: (note: string) => Promise<void>;
+  memberGaps?: Array<{ id: number; question: string }>;
 }
 
-export function ConfirmResolveModal({ gap, onClose, onConfirm }: ConfirmResolveModalProps) {
+export function ConfirmResolveModal({ gap, onClose, onConfirm, memberGaps = [] }: ConfirmResolveModalProps) {
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,6 +101,30 @@ export function ConfirmResolveModal({ gap, onClose, onConfirm }: ConfirmResolveM
           </div>
           <p className="mt-0.5 text-sm leading-5 text-med-text-primary">{gap.rawQuestion}</p>
         </div>
+
+        {memberGaps.length > 0 && (
+          <div className="mt-3 rounded-lg border border-med-primary/40 bg-med-primary-light/30 px-3 py-2.5">
+            <div className="text-xs font-semibold uppercase tracking-wide text-med-primary">
+              Вместе с ним будут закрыты
+            </div>
+            <ul className="mt-1.5 max-h-[160px] space-y-1 overflow-y-auto pr-1">
+              {memberGaps.map((member) => (
+                <li
+                  key={member.id}
+                  className="flex items-start gap-1.5 text-sm leading-5 text-med-text-primary"
+                >
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-med-primary" />
+                  <span className="line-clamp-2" title={member.question}>
+                    {member.question}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1.5 text-xs text-med-text-muted">
+              Все они получат тот же комментарий «Что было сделано».
+            </p>
+          </div>
+        )}
 
         <div className="mt-4 space-y-1.5">
           <label

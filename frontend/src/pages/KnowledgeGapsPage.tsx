@@ -36,7 +36,15 @@ import {
   toDateInputValue,
 } from '../lib/format';
 
-import { fetchKnowledgeGaps, updateGapStatus, addGapComment } from '../api/knowledgeGaps';
+import {
+  fetchKnowledgeGaps,
+  updateGapStatus,
+  addGapComment,
+  confirmGapGroup,
+  resolveGapGroup,
+  type GapGroup,
+  type GapGroupMember,
+} from '../api/knowledgeGaps';
 
 type PageState = 'loading' | 'ready' | 'error';
 
@@ -235,7 +243,11 @@ export function KnowledgeGapsPage() {
     if (initialRole === 'developer' || params.get('panel') === 'closed') return null;
     return params.get('gap');
   });
-  const [resolveTarget, setResolveTarget] = useState<KnowledgeGap | null>(null);
+  const [resolveTarget, setResolveTarget] = useState<{
+    gap: KnowledgeGap;
+    group: GapGroup | null;
+    members: GapGroupMember[];
+  } | null>(null);
   const [dismissTarget, setDismissTarget] = useState<KnowledgeGap | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
 
@@ -469,18 +481,52 @@ export function KnowledgeGapsPage() {
     }
     if (status === 'resolved') {
       setDismissTarget(null);
-      setResolveTarget(gap);
+      setResolveTarget({ gap, group: null, members: [] });
       return;
     }
     setResolveTarget(null);
     setDismissTarget(gap);
   };
 
+  const handleRequestResolveGroup = (
+    gap: KnowledgeGap,
+    group: GapGroup,
+    members: GapGroupMember[],
+  ) => {
+    setDismissTarget(null);
+    setResolveTarget({ gap, group, members });
+  };
+
   const handleResolveConfirm = async (note: string) => {
     if (!resolveTarget) return;
-    await commitStatusChange(resolveTarget, 'resolved', { note }, () =>
-      setResolveTarget(null),
-    );
+    const { gap, group, members } = resolveTarget;
+
+    if (group && members.length > 0) {
+      const memberIds = [Number(gap.id), ...members.map((member) => member.gapId)];
+      try {
+        if (group.status === 'candidate') {
+          await confirmGapGroup(group.id, memberIds, DEMO_ADMIN_USER.name);
+        }
+        await resolveGapGroup(group.id, memberIds, note, DEMO_ADMIN_USER.name);
+        setToast({
+          id: Date.now(),
+          type: 'success',
+          message: `Закрыто пробелов: ${memberIds.length + 1}`,
+        });
+        setResolveTarget(null);
+        await loadGaps();
+      } catch {
+        setToast({
+          id: Date.now(),
+          type: 'error',
+          message: 'Не удалось закрыть группу пробелов. Проверьте соединение.',
+        });
+        throw new Error('group-resolve-failed');
+      }
+      return;
+    }
+
+    await commitStatusChange(gap, 'resolved', { note }, () => setResolveTarget(null));
   };
 
   const handleDismissConfirm = async (reason: DismissReason, comment: string) => {
@@ -669,14 +715,20 @@ export function KnowledgeGapsPage() {
           onSaveComment={commitComment}
           onCopyId={copyToast}
           closeOnEscape={!resolveTarget && !dismissTarget}
+          onSelectGap={(gapId) => setSelectedGapId(String(gapId))}
+          onRequestResolveGroup={handleRequestResolveGroup}
         />
       )}
 
       {resolveTarget && (
         <ConfirmResolveModal
-          gap={resolveTarget}
+          gap={resolveTarget.gap}
           onClose={() => setResolveTarget(null)}
           onConfirm={handleResolveConfirm}
+          memberGaps={resolveTarget.members.map((member) => ({
+            id: member.gapId,
+            question: member.question,
+          }))}
         />
       )}
 

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import {
   BookOpen,
   CheckCircle2,
+  ChevronRight,
   Globe,
   Info,
   MessageSquare,
@@ -18,6 +19,7 @@ import { SourceBadge, StatusBadge } from './GapBadges';
 import { GapStatusTimeline } from './GapStatusTimeline';
 import type { RequestedGapStatus } from './GapTable';
 import { FeedbackReasonCode, getFeedbackReason } from '../../data/feedbackReasons';
+import { fetchGapGroups, type GapGroup, type GapGroupMember } from '../../api/knowledgeGaps';
 
 function formatReasonLabel(reason: string | null | undefined): string {
   if (!reason) return '—';
@@ -34,6 +36,8 @@ interface GapDetailPanelProps {
   onSaveComment: (gap: KnowledgeGap, comment: string) => Promise<void>;
   onCopyId: () => void;
   closeOnEscape?: boolean;
+  onSelectGap?: (gapId: number) => void;
+  onRequestResolveGroup?: (gap: KnowledgeGap, group: GapGroup, members: GapGroupMember[]) => void;
 }
 
 function PanelSection({
@@ -85,15 +89,54 @@ export function GapDetailPanel({
   onSaveComment,
   onCopyId,
   closeOnEscape = true,
+  onSelectGap,
+  onRequestResolveGroup,
 }: GapDetailPanelProps) {
   const [comment, setComment] = useState('');
   const [savingComment, setSavingComment] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
+  const [group, setGroup] = useState<GapGroup | null>(null);
+  const [groupLoading, setGroupLoading] = useState(false);
+  const [selectedMemberIds, setSelectedMemberIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     setComment('');
     setCommentError(null);
   }, [gap.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setGroup(null);
+    setSelectedMemberIds(new Set());
+
+    if (!gap.suggestedMergeCount || gap.suggestedMergeCount <= 0) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setGroupLoading(true);
+    fetchGapGroups(gap.id)
+      .then((groups) => {
+        if (cancelled) return;
+        const active = groups.find(
+          (item) => item.status !== 'dismissed' && item.status !== 'resolved',
+        );
+        setGroup(active ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setGroup(null);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setGroupLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gap.id, gap.suggestedMergeCount]);
 
   useEffect(() => lockBodyScroll(), []);
 
@@ -123,6 +166,15 @@ export function GapDetailPanel({
     } finally {
       setSavingComment(false);
     }
+  };
+
+  const toggleMember = (gapId: number) => {
+    setSelectedMemberIds((current) => {
+      const next = new Set(current);
+      if (next.has(gapId)) next.delete(gapId);
+      else next.add(gapId);
+      return next;
+    });
   };
 
   return (
@@ -203,20 +255,85 @@ export function GapDetailPanel({
 
           {gap.suggestedMergeCount && gap.suggestedMergeCount > 0 && (
             <PanelSection title="Схожие пробелы">
-              <div className="rounded-lg border border-med-warning/40 bg-med-warning/10 px-3 py-2.5">
-                <div className="flex items-start gap-2">
-                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-med-warning" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-med-text-primary">
-                      Найдено похожих пробелов: {gap.suggestedMergeCount}
-                    </p>
-                    <p className="mt-0.5 text-xs leading-4 text-med-text-secondary">
-                      Возможно, это тот же пробел в базе знаний. Управление группами
-                      появится после обновления бэкенда.
-                    </p>
+              {groupLoading ? (
+                <div className="rounded-lg border border-med-border bg-med-bg/40 px-3 py-3 text-sm text-med-text-secondary">
+                  Загружаем похожие пробелы…
+                </div>
+              ) : !group ? (
+                <div className="rounded-lg border border-med-border bg-med-bg/40 px-3 py-3 text-sm text-med-text-secondary">
+                  Похожие пробелы не найдены или группа уже закрыта.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs leading-4 text-med-text-secondary">
+                    Отметьте похожие пробелы, которые нужно закрыть вместе с текущим.
+                    Отмеченные закроются тем же комментарием, что и «Что было сделано».
+                  </p>
+
+                  <div className="max-h-[220px] space-y-1.5 overflow-y-auto pr-1">
+                    {group.members
+                      .filter((member) => member.gapId !== Number(gap.id) && !member.removedAt)
+                      .map((member) => {
+                        const isClosed = member.status === 'resolved' || member.status === 'dismissed';
+                        const checked = !isClosed && selectedMemberIds.has(member.gapId);
+                        return (
+                          <div
+                            key={member.gapId}
+                            className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 transition-colors ${
+                              checked
+                                ? 'border-med-primary bg-med-primary-light/40'
+                                : isClosed
+                                  ? 'border-med-border bg-med-bg/40 opacity-80'
+                                  : 'border-med-border bg-med-surface hover:bg-med-bg'
+                            }`}
+                          >
+                            {isClosed ? (
+                              <span
+                                className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-med-success/15 text-med-success"
+                                title="Пробел уже закрыт"
+                                aria-label="Пробел уже закрыт"
+                              >
+                                <CheckCircle2 className="h-3 w-3" />
+                              </span>
+                            ) : (
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleMember(member.gapId)}
+                                className="mt-0.5 h-4 w-4 shrink-0 rounded border-med-border-strong accent-med-primary"
+                                aria-label={`Выбрать пробел: ${member.question}`}
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => onSelectGap?.(member.gapId)}
+                              disabled={!onSelectGap}
+                              className="min-w-0 flex-1 text-left disabled:cursor-default"
+                              title={member.question}
+                            >
+                              <span
+                                className={`line-clamp-2 text-sm leading-5 ${
+                                  isClosed ? 'text-med-text-secondary line-through' : 'text-med-text-primary'
+                                }`}
+                              >
+                                {member.question}
+                              </span>
+                              <span className="mt-0.5 flex items-center gap-1 text-xs text-med-text-muted">
+                                <StatusBadge status={member.status} />
+                                {member.occurrenceCount > 1 && (
+                                  <span className="ml-1">×{member.occurrenceCount}</span>
+                                )}
+                                {onSelectGap && (
+                                  <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0" />
+                                )}
+                              </span>
+                            </button>
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
-              </div>
+              )}
             </PanelSection>
           )}
 
@@ -381,7 +498,16 @@ export function GapDetailPanel({
 
             <button
               type="button"
-              onClick={() => onRequestStatus(gap, 'resolved')}
+              onClick={() => {
+                const selected = group?.members.filter(
+                  (member) => member.gapId !== Number(gap.id) && selectedMemberIds.has(member.gapId),
+                ) ?? [];
+                if (group && selected.length > 0 && onRequestResolveGroup) {
+                  onRequestResolveGroup(gap, group, selected);
+                } else {
+                  onRequestStatus(gap, 'resolved');
+                }
+              }}
               disabled={isClosed}
               className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-med-primary px-3 text-sm font-semibold text-white transition-colors hover:bg-med-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
