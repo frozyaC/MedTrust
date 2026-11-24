@@ -273,15 +273,33 @@ export default function App() {
         return;
       }
 
-      // Alt+1–9 — вставка шаблона
+      // Alt+1–9 — вставка обычного вопроса или уточнения
       const match = event.code.match(/^(?:Digit|Numpad)([1-9])$/);
       if (!match) return;
 
       const shortcut = match[1];
+      const index = Number(shortcut) - 1;
 
+      if (hasThread) {
+        // Если диалог открыт — берём уточняющие вопросы
+        const preset = suggestions.suggestions[index];
+        if (!preset) return;
+
+        event.preventDefault();
+
+        setSuggestion('');
+        window.setTimeout(() => {
+          setSuggestion(preset.label);
+          followUpInputRef.current?.focus();
+        }, 0);
+
+        return;
+      }
+
+      // Если диалога нет — берём обычные вопросы
       const preset =
         questionPresets.find((item) => item.shortcut === shortcut) ??
-        questionPresets[Number(shortcut) - 1];
+        questionPresets[index];
 
       if (!preset) return;
 
@@ -296,7 +314,7 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyboardShortcuts);
     };
-  }, [hasThread, questionPresets]);
+  }, [hasThread, questionPresets, suggestions]);
 
 
   useEffect(() => {
