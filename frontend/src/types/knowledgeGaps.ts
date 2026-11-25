@@ -61,7 +61,7 @@ export interface KnowledgeGap {
   feedback?: GapFeedback;
   comments: GapComment[];
   webSearchUsed: boolean;
-  // ── Группировка похожих пробелов (появится после правок бэка) ──
+  // Legacy cluster metadata; owner-managed membership comes from the groups API.
   /** Сколько других пробелов бэк предлагает смержить с этим */
   suggestedMergeCount?: number;
   /** Канонический вопрос группы, к которой относится пробел */
@@ -85,4 +85,58 @@ export interface GapFilters {
   statuses: GapStatus[];
   sources: GapSource[];
   reasons: GapReason[];
+}
+
+export type GapGroupStatus = 'candidate' | GapStatus;
+
+export interface GapGroupMember {
+  gapId: number;
+  question: string;
+  status: GapStatus;
+  occurrenceCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  similarity: number;
+  assignmentSource: string;
+  removedAt: string | null;
+  removedBy: string | null;
+  removalReason: string | null;
+}
+
+export interface KnowledgeGapGroup {
+  id: number;
+  title: string;
+  representativeQuery: string;
+  status: GapGroupStatus;
+  activeMemberCount: number;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+  members: GapGroupMember[];
+}
+
+export interface GapGroupConfirmRequest {
+  member_ids: number[];
+  author: string;
+}
+
+export interface GapGroupDetachRequest {
+  reason: string;
+  author: string;
+}
+
+export interface GapGroupResolveRequest {
+  member_ids: number[];
+  note: string;
+  author: string;
+  idempotency_key: string;
+}
+
+export interface GapGroupResolveResult {
+  status: 'completed';
+  group_id: number;
+  resolved_count: number;
+  resolved_gap_ids: number[];
 }

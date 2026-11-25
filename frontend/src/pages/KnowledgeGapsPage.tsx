@@ -7,6 +7,7 @@ import { DeveloperGapsView } from '../components/admin/DeveloperGapsView';
 import { DismissGapModal } from '../components/admin/DismissGapModal';
 import { EmptyState } from '../components/admin/EmptyState';
 import { GapDetailPanel } from '../components/admin/GapDetailPanel';
+import { KnowledgeGapGroups } from '../components/admin/KnowledgeGapGroups';
 import { GapFilterBar } from '../components/admin/GapFilterBar';
 import { GapTable, GapTableSkeleton } from '../components/admin/GapTable';
 import type { RequestedGapStatus } from '../components/admin/GapTable';
@@ -20,6 +21,9 @@ import {
   GapSort,
   GapStatus,
   KnowledgeGap,
+  KnowledgeGapGroup,
+  GapGroupMember,
+  GapGroupResolveRequest,
 } from '../types/knowledgeGaps';
 import {
   DEFAULT_FILTERS,
@@ -41,9 +45,9 @@ import {
   updateGapStatus,
   addGapComment,
   confirmGapGroup,
+  fetchGapGroup,
   resolveGapGroup,
-  type GapGroup,
-  type GapGroupMember,
+  gapGroupErrorMessage,
 } from '../api/knowledgeGaps';
 
 type PageState = 'loading' | 'ready' | 'error';
@@ -224,6 +228,8 @@ export function KnowledgeGapsPage() {
   const initialStatuses = parseStatusFilter(params.get('status'));
 
   const [role, setRole] = useState<AdminRole>(initialRole);
+  const [view, setView] = useState<'gaps' | 'groups'>('gaps');
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [gaps, setGaps] = useState<KnowledgeGap[]>([]);
   const [period, setPeriod] = useState<GapPeriod>(initialPeriod);
   const [customFrom, setCustomFrom] = useState(() =>
@@ -245,7 +251,7 @@ export function KnowledgeGapsPage() {
   });
   const [resolveTarget, setResolveTarget] = useState<{
     gap: KnowledgeGap;
-    group: GapGroup | null;
+    group: KnowledgeGapGroup | null;
     members: GapGroupMember[];
   } | null>(null);
   const [dismissTarget, setDismissTarget] = useState<KnowledgeGap | null>(null);
@@ -253,6 +259,10 @@ export function KnowledgeGapsPage() {
 
   const failNextLoadRef = useRef(initialDebugState === 'error');
   const debugLoadingRef = useRef(initialDebugState === 'loading');
+  const pendingGroupResolve = useRef<{
+    signature: string;
+    request: GapGroupResolveRequest;
+  } | null>(null);
 
   const loadGaps = useCallback(async () => {
     setPageState('loading');
@@ -490,10 +500,11 @@ export function KnowledgeGapsPage() {
 
   const handleRequestResolveGroup = (
     gap: KnowledgeGap,
-    group: GapGroup,
+    group: KnowledgeGapGroup,
     members: GapGroupMember[],
   ) => {
     setDismissTarget(null);
+    pendingGroupResolve.current = null;
     setResolveTarget({ gap, group, members });
   };
 
@@ -502,24 +513,32 @@ export function KnowledgeGapsPage() {
     const { gap, group, members } = resolveTarget;
 
     if (group && members.length > 0) {
-      const memberIds = [Number(gap.id), ...members.map((member) => member.gapId)];
+      const memberIds = [...new Set([Number(gap.id), ...members.map((member) => member.gapId)])].sort((a, b) => a - b);
+      const body = { member_ids: memberIds, note, author: DEMO_ADMIN_USER.name };
+      const signature = JSON.stringify({ groupId: group.id, ...body });
+      if (pendingGroupResolve.current?.signature !== signature) {
+        const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        pendingGroupResolve.current = { signature, request: { ...body, idempotency_key: key } };
+      }
+      const request = pendingGroupResolve.current.request;
       try {
-        if (group.status === 'candidate') {
-          await confirmGapGroup(group.id, memberIds, DEMO_ADMIN_USER.name);
+        const currentGroup = await fetchGapGroup(group.id);
+        if (currentGroup.status === 'candidate') {
+          await confirmGapGroup(group.id, { member_ids: memberIds, author: DEMO_ADMIN_USER.name });
         }
-        await resolveGapGroup(group.id, memberIds, note, DEMO_ADMIN_USER.name);
+        const result = await resolveGapGroup(group.id, request);
         setToast({
           id: Date.now(),
           type: 'success',
-          message: `Закрыто пробелов: ${memberIds.length + 1}`,
+          message: `Закрыто пробелов: ${result.resolved_count}`,
         });
         setResolveTarget(null);
         await loadGaps();
-      } catch {
+      } catch (error) {
         setToast({
           id: Date.now(),
           type: 'error',
-          message: 'Не удалось закрыть группу пробелов. Проверьте соединение.',
+          message: gapGroupErrorMessage(error),
         });
         throw new Error('group-resolve-failed');
       }
@@ -543,6 +562,8 @@ export function KnowledgeGapsPage() {
 
   const handleRoleChange = (nextRole: AdminRole) => {
     setRole(nextRole);
+    setView('gaps');
+    setSelectedGroupId(null);
     setSelectedGapId(null);
     setResolveTarget(null);
     setDismissTarget(null);
@@ -566,6 +587,24 @@ export function KnowledgeGapsPage() {
   };
 
   const periodLabelText = periodLabel(period);
+
+  const refreshAfterGroupChange = async () => {
+    const loaded = await fetchKnowledgeGaps();
+    setGaps(loaded);
+    setPageState('ready');
+  };
+
+  const openGroupGap = async (gapId: number) => {
+    try {
+      const [loaded] = await fetchKnowledgeGaps(gapId);
+      if (!loaded) throw new Error('Пробел не найден');
+      setGaps((current) => [...current.filter((item) => Number(item.id) !== gapId), loaded]);
+      setSelectedGroupId(null);
+      setSelectedGapId(String(gapId));
+    } catch (error) {
+      setToast({ id: Date.now(), type: 'error', message: error instanceof Error ? error.message : 'Не удалось открыть пробел' });
+    }
+  };
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-med-bg font-sans text-med-text-primary antialiased">
@@ -612,7 +651,7 @@ export function KnowledgeGapsPage() {
                 </p>
               </div>
 
-              <PeriodSelector
+              {(role === 'developer' || view === 'gaps') && <PeriodSelector
                 period={period}
                 onPeriodChange={(next) => {
                   setPeriod(next);
@@ -622,10 +661,21 @@ export function KnowledgeGapsPage() {
                 customTo={customTo}
                 onCustomFromChange={setCustomFrom}
                 onCustomToChange={setCustomTo}
-              />
+              />}
             </div>
 
-            {pageState === 'error' ? (
+            {role === 'kb_owner' && <div className="flex gap-2" role="group" aria-label="Представление карты пробелов">
+              {(['gaps', 'groups'] as const).map((value) => <button key={value} type="button" aria-pressed={view === value}
+                className={`rounded-lg border px-4 py-2 text-sm font-medium ${view === value ? 'border-med-primary bg-med-primary-light text-med-primary' : 'border-med-border bg-med-surface'}`}
+                onClick={() => { setView(value); setSelectedGapId(null); setSelectedGroupId(null); }}>
+                {value === 'gaps' ? 'Пробелы' : 'Группы'}
+              </button>)}
+            </div>}
+
+            {role === 'kb_owner' && view === 'groups' ? <KnowledgeGapGroups
+              groupId={selectedGroupId} author={DEMO_ADMIN_USER.name} onSelectGroup={setSelectedGroupId}
+              onOpenGap={(gapId) => void openGroupGap(gapId)} onChanged={refreshAfterGroupChange}
+            /> : pageState === 'error' ? (
               <LoadError
                 onRetry={() => {
                   void loadGaps();
@@ -714,8 +764,9 @@ export function KnowledgeGapsPage() {
           onRequestStatus={handleRequestStatus}
           onSaveComment={commitComment}
           onCopyId={copyToast}
+          onOpenGroup={(groupId) => { setSelectedGapId(null); setView('groups'); setSelectedGroupId(groupId); }}
           closeOnEscape={!resolveTarget && !dismissTarget}
-          onSelectGap={(gapId) => setSelectedGapId(String(gapId))}
+          onSelectGap={(gapId) => void openGroupGap(gapId)}
           onRequestResolveGroup={handleRequestResolveGroup}
         />
       )}

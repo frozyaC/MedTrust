@@ -99,8 +99,17 @@ def test_list_groups_filters_by_gap_id_and_triggers_backfill(monkeypatch):
     assert result == []
     assert backfill_calls == [True]
     sql, params = conn.calls[0]
-    assert "gap_filter.gap_id=%s::bigint" in sql
+    assert "gap_filter.gap_id = %s::bigint" in sql
     assert params == (None, None, 18, 18, 500)
+
+
+def test_list_gaps_can_load_a_specific_member_outside_the_recent_list(monkeypatch):
+    conn = FakeConnection(all_rows=[])
+    _patch_db(monkeypatch, conn)
+    assert GapMapService().list_gaps(gap_id=5001) == []
+    sql, params = conn.calls[0]
+    assert "WHERE g.id=%s" in sql
+    assert params == [5001, 500]
 
 
 def test_detach_legacy_cluster_suggestion_is_audited_and_cleared(monkeypatch):

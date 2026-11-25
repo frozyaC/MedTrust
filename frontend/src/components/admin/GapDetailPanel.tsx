@@ -11,15 +11,16 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
-import { KnowledgeGap } from '../../types/knowledgeGaps';
+import type { KnowledgeGap, KnowledgeGapGroup, GapGroupMember } from '../../types/knowledgeGaps';
 import { formatDateTime, shortId } from '../../lib/format';
 import { lockBodyScroll } from '../../lib/scrollLock';
 import { CopyButton } from './CopyButton';
 import { SourceBadge, StatusBadge } from './GapBadges';
 import { GapStatusTimeline } from './GapStatusTimeline';
+import { RelatedGapGroups } from './RelatedGapGroups';
 import type { RequestedGapStatus } from './GapTable';
 import { FeedbackReasonCode, getFeedbackReason } from '../../data/feedbackReasons';
-import { fetchGapGroups, type GapGroup, type GapGroupMember } from '../../api/knowledgeGaps';
+import { fetchGapGroups } from '../../api/knowledgeGaps';
 
 function formatReasonLabel(reason: string | null | undefined): string {
   if (!reason) return '—';
@@ -35,9 +36,10 @@ interface GapDetailPanelProps {
   onRequestStatus: (gap: KnowledgeGap, status: RequestedGapStatus) => void;
   onSaveComment: (gap: KnowledgeGap, comment: string) => Promise<void>;
   onCopyId: () => void;
+  onOpenGroup: (groupId: number) => void;
   closeOnEscape?: boolean;
   onSelectGap?: (gapId: number) => void;
-  onRequestResolveGroup?: (gap: KnowledgeGap, group: GapGroup, members: GapGroupMember[]) => void;
+  onRequestResolveGroup?: (gap: KnowledgeGap, group: KnowledgeGapGroup, members: GapGroupMember[]) => void;
 }
 
 function PanelSection({
@@ -88,6 +90,7 @@ export function GapDetailPanel({
   onRequestStatus,
   onSaveComment,
   onCopyId,
+  onOpenGroup,
   closeOnEscape = true,
   onSelectGap,
   onRequestResolveGroup,
@@ -95,7 +98,7 @@ export function GapDetailPanel({
   const [comment, setComment] = useState('');
   const [savingComment, setSavingComment] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
-  const [group, setGroup] = useState<GapGroup | null>(null);
+  const [group, setGroup] = useState<KnowledgeGapGroup | null>(null);
   const [groupLoading, setGroupLoading] = useState(false);
   const [selectedMemberIds, setSelectedMemberIds] = useState<Set<number>>(new Set());
 
@@ -116,7 +119,7 @@ export function GapDetailPanel({
     }
 
     setGroupLoading(true);
-    fetchGapGroups(gap.id)
+    fetchGapGroups({ gap_id: Number(gap.id) })
       .then((groups) => {
         if (cancelled) return;
         const active = groups.find(
@@ -336,6 +339,7 @@ export function GapDetailPanel({
               )}
             </PanelSection>
           )}
+          <RelatedGapGroups gapId={Number(gap.id)} onOpen={onOpenGroup} />
 
           <PanelSection title="Связи">
             <div className="space-y-1.5 rounded-lg border border-med-border bg-med-surface p-2.5">
