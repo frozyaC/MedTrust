@@ -21,8 +21,22 @@ def seed_knowledge_index() -> None:
     repo = KnowledgeRepository()
     document_count = repo.document_count()
     stored_hash = repo.get_index_archive_hash()
-    if document_count > 0 and stored_hash == archive_hash:
-        logger.info("Knowledge index is up to date (%s documents)", document_count)
+    if document_count > 0:
+        if stored_hash == archive_hash:
+            logger.info("Knowledge index is up to date (%s documents)", document_count)
+        elif stored_hash is None:
+            logger.warning(
+                "Knowledge index already contains %s documents but has no seed archive fingerprint; "
+                "skipping automatic reindex to protect existing/additively imported documents. "
+                "Use POST /api/v1/knowledge/reindex only for an intentional full replacement.",
+                document_count,
+            )
+        else:
+            logger.warning(
+                "Configured seed archive differs from the indexed baseline; skipping automatic "
+                "destructive reindex to preserve existing/additively imported documents. "
+                "Use POST /api/v1/knowledge/reindex only for an intentional full replacement."
+            )
         return
 
     logger.info("Indexing knowledge archive %s", archive)
