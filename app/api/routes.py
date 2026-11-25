@@ -69,6 +69,22 @@ def health() -> dict:
         return {"status": "degraded", "database": f"error: {exc}"}
 
 
+@admin_router.post("/knowledge/add")
+def add_knowledge(file: UploadFile = File(...)) -> dict:
+    """Append or update an archive without replacing the existing Wiki index."""
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Ожидается ZIP-архив с Markdown-файлами")
+    try:
+        documents = parse_zip(file.file.read())
+        stats = KnowledgeRepository().add_documents(documents)
+        return {"status": "completed", **stats}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Additive knowledge import failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка добавления базы знаний: {exc}") from exc
+
+
 @admin_router.post("/knowledge/reindex")
 def reindex(file: UploadFile = File(...)) -> dict:
     if not file.filename or not file.filename.lower().endswith(".zip"):

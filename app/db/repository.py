@@ -61,6 +61,116 @@ class KnowledgeRepository:
             conn.commit()
         return {"documents": document_count, "chunks": chunk_count}
 
+    def add_documents(self, documents: list[ParsedDocument]) -> dict[str, int | str]:
+        """Add or update documents without deleting unrelated indexed content.
+
+        Documents are keyed by ``source_key`` (the normalized Wiki path). An
+        unchanged document is skipped; a changed document replaces only its own
+        chunks. All writes are committed in one transaction.
+        """
+        if not documents:
+            raise ValueError("Архив не содержит документов для добавления")
+
+        source_keys = [doc.source_key for doc in documents]
+        if len(source_keys) != len(set(source_keys)):
+            raise ValueError("В архиве обнаружены повторяющиеся Wiki-пути")
+
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT source_key, content_hash FROM knowledge_documents WHERE source_key = ANY(%s)",
+                (source_keys,),
+            ).fetchall()
+        existing_hashes = {str(source_key): str(content_hash) for source_key, content_hash in rows}
+
+        prepared: list[tuple[ParsedDocument, list[dict[str, Any]]]] = []
+        added_count = 0
+        updated_count = 0
+        unchanged_count = 0
+        for doc in documents:
+            previous_hash = existing_hashes.get(doc.source_key)
+            if previous_hash == doc.content_hash:
+                unchanged_count += 1
+                continue
+            if previous_hash is None:
+                added_count += 1
+            else:
+                updated_count += 1
+            prepared.append((doc, build_chunks(doc)))
+
+        all_texts = [chunk["embedding_text"] for _, chunks in prepared for chunk in chunks]
+        vectors = get_embedding_client().embed(all_texts) if all_texts else []
+        if len(vectors) != len(all_texts):
+            raise RuntimeError(
+                f"Embedding provider вернул {len(vectors)} векторов для {len(all_texts)} чанков"
+            )
+        vector_iter = iter(vectors)
+
+        chunks_written = 0
+        if prepared:
+            with get_connection() as conn:
+                for doc, chunks in prepared:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO knowledge_documents
+                        (id, source_key, filename, title, wiki_path, path_segments, source_url, content_hash)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (source_key) DO UPDATE SET
+                            filename = EXCLUDED.filename,
+                            title = EXCLUDED.title,
+                            wiki_path = EXCLUDED.wiki_path,
+                            path_segments = EXCLUDED.path_segments,
+                            source_url = EXCLUDED.source_url,
+                            content_hash = EXCLUDED.content_hash,
+                            updated_at = NOW()
+                        RETURNING id
+                        """,
+                        (uuid.uuid5(NAMESPACE, doc.source_key), doc.source_key, doc.filename,
+                         doc.title, doc.wiki_path, doc.path_segments, doc.source_url, doc.content_hash),
+                    )
+                    document_row = cursor.fetchone()
+                    if not document_row:
+                        raise RuntimeError(f"Не удалось получить ID документа {doc.wiki_path}")
+                    document_id = document_row[0]
+
+                    # Replace chunks only for this exact document; all unrelated
+                    # documents and their vectors remain untouched.
+                    conn.execute(
+                        "DELETE FROM knowledge_chunks WHERE document_id = %s",
+                        (document_id,),
+                    )
+                    normalized_path = path_context(doc.wiki_path)
+                    for chunk in chunks:
+                        embedding = next(vector_iter)
+                        chunk_id = uuid.uuid5(NAMESPACE, f"{doc.source_key}:{chunk['chunk_index']}")
+                        conn.execute(
+                            """
+                            INSERT INTO knowledge_chunks
+                            (id, document_id, chunk_index, section, content, embedding_text, embedding, search_vector, path_vector)
+                            VALUES (
+                                %s,%s,%s,%s,%s,%s,%s,
+                                setweight(to_tsvector('russian', %s),'A') ||
+                                setweight(to_tsvector('russian', %s),'A') ||
+                                setweight(to_tsvector('russian', %s),'A') ||
+                                setweight(to_tsvector('russian', %s),'B'),
+                                to_tsvector('russian', %s)
+                            )
+                            """,
+                            (chunk_id, document_id, chunk["chunk_index"], chunk["section"],
+                             chunk["content"], chunk["embedding_text"], embedding, doc.title,
+                             normalized_path, chunk["section"], chunk["content"], normalized_path),
+                        )
+                        chunks_written += 1
+                conn.commit()
+
+        return {
+            "mode": "additive_upsert",
+            "documents_received": len(documents),
+            "documents_added": added_count,
+            "documents_updated": updated_count,
+            "documents_unchanged": unchanged_count,
+            "chunks_written": chunks_written,
+        }
+
     @staticmethod
     def _fts_or_query(query: str) -> str:
         tokens = re.findall(r"[а-яёa-z0-9]+", query.lower())
