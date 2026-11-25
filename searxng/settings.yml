@@ -1,5 +1,9 @@
 use_default_settings: true
 
+engines:
+  - name: bing
+    disabled: false
+
 general:
   debug: false
   instance_name: "MedTrust SearXNG"
