@@ -8,6 +8,7 @@ Golden Set JSON, not in this module.
 from __future__ import annotations
 
 import re
+import math
 import unicodedata
 from collections import defaultdict
 from pathlib import PurePosixPath
@@ -222,6 +223,53 @@ def _collect_source_paths(items: Any) -> list[str]:
     return paths
 
 
+def retrieval_quality_metrics(
+    expected_paths: list[str], retrieval: list[dict[str, Any]], k: int = 5
+) -> dict[str, float | int] | None:
+    """Document-level retrieval metrics; duplicate chunks from one path count once.
+
+    Golden Set v1 labels expected Wiki document paths, not individual chunk IDs.
+    This function therefore evaluates ranked unique documents rather than chunks.
+    """
+    expected = list(dict.fromkeys(normalize_path(path) for path in expected_paths if normalize_path(path)))
+    if not expected:
+        return None
+    if k < 1:
+        raise ValueError("k должен быть положительным")
+
+    ranked_paths: list[str] = []
+    seen: set[str] = set()
+    for item in retrieval if isinstance(retrieval, list) else []:
+        if not isinstance(item, dict):
+            continue
+        raw_path = (item.get("path") or item.get("wiki_path") or item.get("source_path")
+                    or item.get("document_path"))
+        normalized = normalize_path(str(raw_path or ""))
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            ranked_paths.append(str(raw_path))
+
+    relevant = [
+        any(_path_matches(expected_path, actual_path) for expected_path in expected)
+        for actual_path in ranked_paths[:k]
+    ]
+    hits = sum(relevant)
+    first_rank = next((index for index, is_relevant in enumerate(relevant, start=1) if is_relevant), None)
+    dcg = sum(1.0 / math.log2(rank + 1)
+              for rank, is_relevant in enumerate(relevant, start=1) if is_relevant)
+    ideal_hits = min(len(expected), k)
+    idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_hits + 1))
+    return {
+        "k": int(k),
+        "retrieved_unique_documents": len(ranked_paths),
+        "relevant_documents_retrieved_at_k": int(hits),
+        "precision_at_k": round(hits / k, 4),
+        "recall_at_k": round(hits / len(expected), 4),
+        "mrr_at_k": round(1.0 / first_rank, 4) if first_rank else 0.0,
+        "ndcg_at_k": round(dcg / idcg, 4) if idcg else 0.0,
+    }
+
+
 def _used_source_ids(response: dict[str, Any], diagnostics: dict[str, Any], sources: list[Any]) -> set[str]:
     ids = diagnostics.get("used_source_ids") or response.get("used_source_ids") or []
     used = {str(value) for value in ids if value is not None}
@@ -305,6 +353,7 @@ def evaluate_case(
     case: dict[str, Any],
     response: dict[str, Any] | None,
     error: str | None = None,
+    retrieval_k: int = 5,
 ) -> dict[str, Any]:
     base = {
         "id": case["id"], "question": case["question"], "category": case["category"],
@@ -313,7 +362,7 @@ def evaluate_case(
     if error or not isinstance(response, dict):
         return {
             **base, "status": "request_error", "error": error or "Некорректный ответ API",
-            "score": 0, "max_score": 5,
+            "score": 0, "max_score": 5, "retrieval_quality": None,
         }
 
     answer = str(response.get("answer") or "")
@@ -335,6 +384,7 @@ def evaluate_case(
     returned_paths = _collect_source_paths(sources)
     retrieval_paths = _collect_source_paths(retrieval)
     expected_paths = case.get("expected_source_paths") or []
+    retrieval_quality = retrieval_quality_metrics(expected_paths, retrieval, retrieval_k)
     matched_in_sources = [expected for expected in expected_paths if any(_path_matches(expected, p) for p in returned_paths)]
     matched_in_retrieval = [expected for expected in expected_paths if any(_path_matches(expected, p) for p in retrieval_paths)]
     used_ids = _used_source_ids(response, diagnostics, sources)
@@ -373,6 +423,7 @@ def evaluate_case(
             "abstained": abstained, "has_source_candidates": has_source_candidates,
             "has_used_sources": has_used_sources, "used_source_ids": sorted(used_ids),
             "validation_status": validation_status, "answer": answer,
+            "retrieval_quality": retrieval_quality,
         }
 
     # Scoring model for answerable / partially answerable cases:
@@ -415,6 +466,7 @@ def evaluate_case(
         "missing_facts_expected": missing_facts_expected,
         "missing_facts_disclosed": missing_disclosed,
         "answer": answer,
+        "retrieval_quality": retrieval_quality,
     }
 
 
@@ -422,6 +474,19 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for result in results:
         groups[result["category"]].append(result)
+    metric_keys = ("precision_at_k", "recall_at_k", "mrr_at_k", "ndcg_at_k")
+    metric_items = [item["retrieval_quality"] for item in results
+                    if isinstance(item.get("retrieval_quality"), dict)]
+    retrieval_summary: dict[str, Any] = {"evaluated_cases": len(metric_items)}
+    if metric_items:
+        retrieval_summary["k"] = metric_items[0].get("k")
+        for metric in metric_keys:
+            retrieval_summary[metric] = round(
+                sum(float(item[metric]) for item in metric_items) / len(metric_items), 4
+            )
+    else:
+        for metric in metric_keys:
+            retrieval_summary[metric] = None
     return {
         "total": len(results),
         "passed": sum(result["status"] == "passed" for result in results),
@@ -429,6 +494,7 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         "request_errors": sum(result["status"] == "request_error" for result in results),
         "score": sum(result["score"] for result in results),
         "max_score": sum(result["max_score"] for result in results),
+        "retrieval_metrics": retrieval_summary,
         "by_category": {
             category: {
                 "total": len(items),

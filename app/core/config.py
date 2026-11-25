@@ -61,6 +61,15 @@ class Settings(BaseSettings):
         "nice.org.uk,pubmed.ncbi.nlm.nih.gov,cr.minzdrav.gov.ru,who.int"
     )
     web_min_wiki_dense_similarity: float = 0.62
+    # Optional LangSmith observability. Tracing stays off unless explicitly enabled.
+    langsmith_tracing: bool = False
+    langsmith_api_key: str = ""
+    langsmith_project: str = "MedTrust"
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+    # Keep patient/history/source text out of cloud traces by default.
+    langsmith_trace_content: bool = False
+    langsmith_dataset_name: str = "MedTrust Golden Set v1 — Retrieval"
+
     web_safe_domains: str = (
         "pubmed.ncbi.nlm.nih.gov,ncbi.nlm.nih.gov,nih.gov,who.int,cdc.gov,"
         "fda.gov,ema.europa.eu,nice.org.uk,nhs.uk,medlineplus.gov,"

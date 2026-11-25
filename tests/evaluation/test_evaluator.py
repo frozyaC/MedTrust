@@ -222,3 +222,67 @@ def test_compound_durations_are_not_matched_by_unrelated_numbers():
     )
     assert result["fact_coverage"] == 0.0
     assert result["fact_match_details"][0]["method"] == "numeric_context_not_verified"
+
+
+def test_retrieval_metrics_rank_unique_documents_not_duplicate_chunks():
+    from evaluator import retrieval_quality_metrics
+
+    metrics = retrieval_quality_metrics(
+        ["Словарь/УЗИ/УЗИ_ОБП.md", "Скрипты/Чат.md"],
+        [
+            {"path": "Регистратура/Словарь/УЗИ/УЗИ_ОБП", "chunk_id": "1"},
+            {"path": "Регистратура/Словарь/УЗИ/УЗИ_ОБП", "chunk_id": "2"},
+            {"path": "Регистратура/Скрипты/Чат", "chunk_id": "3"},
+        ],
+        k=3,
+    )
+    assert metrics is not None
+    assert metrics["retrieved_unique_documents"] == 2
+    assert metrics["precision_at_k"] == 0.6667
+    assert metrics["recall_at_k"] == 1.0
+    assert metrics["mrr_at_k"] == 1.0
+    assert metrics["ndcg_at_k"] == 1.0
+
+
+def test_retrieval_metrics_reward_relevant_document_at_second_rank():
+    from evaluator import retrieval_quality_metrics
+
+    metrics = retrieval_quality_metrics(
+        ["Словарь/УЗИ/УЗИ_ОБП.md"],
+        [
+            {"path": "Скрипты/Чат.md"},
+            {"path": "Словарь/УЗИ/УЗИ_ОБП.md"},
+        ],
+        k=2,
+    )
+    assert metrics is not None
+    assert metrics["precision_at_k"] == 0.5
+    assert metrics["recall_at_k"] == 1.0
+    assert metrics["mrr_at_k"] == 0.5
+    assert metrics["ndcg_at_k"] == round(1 / __import__("math").log2(3), 4)
+
+
+def test_retrieval_metrics_return_zero_when_no_expected_document_is_found():
+    from evaluator import retrieval_quality_metrics
+
+    metrics = retrieval_quality_metrics(
+        ["Словарь/УЗИ/УЗИ_ОБП.md"],
+        [{"path": "Скрипты/Чат.md"}],
+        k=5,
+    )
+    assert metrics is not None
+    assert metrics["precision_at_k"] == 0.0
+    assert metrics["recall_at_k"] == 0.0
+    assert metrics["mrr_at_k"] == 0.0
+    assert metrics["ndcg_at_k"] == 0.0
+
+
+def test_retrieval_metric_summary_averages_available_cases_only():
+    summary = summarize([
+        {"category": "A", "status": "passed", "score": 5, "max_score": 5,
+         "retrieval_quality": {"k": 5, "precision_at_k": 0.5, "recall_at_k": 1.0, "mrr_at_k": 1.0, "ndcg_at_k": 0.8}},
+        {"category": "A", "status": "needs_review", "score": 2, "max_score": 5,
+         "retrieval_quality": None},
+    ])
+    assert summary["retrieval_metrics"]["evaluated_cases"] == 1
+    assert summary["retrieval_metrics"]["precision_at_k"] == 0.5

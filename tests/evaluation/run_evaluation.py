@@ -120,7 +120,7 @@ def main() -> int:
         try: response=post_query(endpoint,payload,args.timeout)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc: error=str(exc)
         elapsed=round(time.monotonic()-t0,2)
-        result=evaluate_case(case,response,error)
+        result=evaluate_case(case,response,error,retrieval_k=args.top_k)
         result["elapsed_seconds"]=elapsed
         results.append(result)
         raw.append({"id":case["id"],"request":payload,"response":response,"error":error,"elapsed_seconds":elapsed})
@@ -148,6 +148,13 @@ def main() -> int:
     raw_path.write_text(json.dumps(raw,ensure_ascii=False,indent=2),encoding="utf-8")
     lines=["# MedTrust Golden Set v1 — отчёт", "",f"- Дата UTC: {stamp}",f"- API: `{endpoint}`",f"- Кейсов: {len(cases)}",f"- Версия evaluator: {dataset.get('evaluator_version', 2)}",f"- Время: {elapsed:.1f} сек", "",
            "## Сводка", "",f"- Passed: {summary['passed']}",f"- Needs review: {summary['needs_review']}",f"- Ошибки запросов: {summary['request_errors']}",f"- Баллы: {summary['score']} / {summary['max_score']}", "",
+           "## Retrieval metrics", "",
+           f"- Единица оценки: уникальный документ Wiki (пути из Golden Set; повторные чанки одного документа схлопываются). K={summary['retrieval_metrics'].get('k', args.top_k)}.",
+           f"- Precision@K: {summary['retrieval_metrics']['precision_at_k']}",
+           f"- Recall@K: {summary['retrieval_metrics']['recall_at_k']}",
+           f"- MRR@K: {summary['retrieval_metrics']['mrr_at_k']}",
+           f"- nDCG@K: {summary['retrieval_metrics']['ndcg_at_k']}",
+           f"- Кейсов с эталонными путями: {summary['retrieval_metrics']['evaluated_cases']}", "",
            "## По категориям", "", "| Категория | Кейсов | Passed | Needs review | Баллы |", "|---|---:|---:|---:|---:|"]
     for category,item in summary["by_category"].items(): lines.append(f"| {category} | {item['total']} | {item['passed']} | {item['needs_review']} | {item['score']} / {item['max_score']} |")
     lines += ["", "## Результаты по кейсам", "", "| ID | Вопрос | Факты | Источник найден | Источник использован | Статус |", "|---|---|---:|---|---|---|"]
@@ -160,6 +167,7 @@ def main() -> int:
               "Для кейсов full/partial: 3 балла — покрытие ожидаемых фактов; 1 — ожидаемый документ найден в retrieval; 1 — API-проверка источников прошла (для partial также требуется раскрыть пропуск). Статус `passed` требует покрытия не менее 75%, выбора и использования ожидаемого источника, прохождения API-проверки и раскрытия ожидаемых пробелов.",
               "Для кейсов absent: 2 балла — явный отказ от неподтверждённого ответа; 1 — отсутствие использованных источников. Нерелевантные кандидаты retrieval сами по себе не считаются использованием.",
               "Сопоставление фактов детерминированное: точное нормализованное совпадение, явно заданные алиасы/regex или строгое совпадение терминов. Числа и коды не ослабляются. Путь документа нормализуется: убираются корневые префиксы, расширение `.md`, различия слешей и подчёркиваний.",
+              "Retrieval metrics вычисляются по уникальным путям документов, а не по ID отдельных чанков: Golden Set v1 размечает expected_source_paths, но не содержит эталонных chunk_id. Precision@K использует фиксированный знаменатель K; Recall@K — число ожидаемых документов; MRR@K и nDCG@K оценивают порядок релевантных документов.",
               "", "## Кейсы, требующие проверки", ""]
     for item in results:
         if item["status"] != "passed":

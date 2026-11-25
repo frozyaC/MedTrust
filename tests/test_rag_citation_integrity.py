@@ -93,8 +93,8 @@ def test_follow_up_keeps_low_score_wiki_candidates_but_ranks_strong_match_first(
     )
 
     assert "Травматолог-ортопед" in prompt
-    assert "Нерелевантная Wiki статья" in prompt
-    assert prompt.index("Травматолог-ортопед") < prompt.index("Нерелевантная Wiki статья")
+    assert "Нерелевантная Wiki статья" not in prompt
+    assert "РЕЖИМ LOCAL_WIKI_ONLY" in prompt
 
 
 def test_strong_wiki_match_ranks_weak_candidates_after_strong_chunks(monkeypatch):
@@ -250,6 +250,16 @@ def test_false_no_data_answer_uses_evidence_fallback_without_extra_model_calls(m
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
     service.gigachat = FakeGigaChat()
+    service.contextualizer = SimpleNamespace(resolve=lambda **kwargs: SimpleNamespace(
+        resolved_query=kwargs["current_question"],
+        clarification_required=False,
+        clarification_question=None,
+        llm_attempted=False,
+        intent="new_question",
+        confidence=1.0,
+        as_dict=lambda: {"resolved_query": kwargs["current_question"], "intent": "new_question"},
+    ))
+    service.knowledge_gap_tracker = SimpleNamespace(record_gap=lambda **kwargs: None)
     service.web_search = SimpleNamespace(
         search=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Web search not expected"))
     )
@@ -297,222 +307,6 @@ def test_extract_fallback_returns_strong_wiki_evidence_with_valid_citation(monke
     assert sources[0]["citation"] == "[W1]"
 
 
-def test_rag_ignores_irrelevant_web_source_and_uses_unverified_fallback_for_current_guidance(monkeypatch):
-    from app.services.web_search import WebSearchResponse
-
-    class Settings:
-        web_min_wiki_dense_similarity = 0.62
-        memory_follow_up_max_chars = 300
-
-    monkeypatch.setattr("app.services.rag.get_settings", lambda: Settings())
-
-    class FakeMemory:
-        def __init__(self):
-            self.messages = []
-
-        def ensure_conversation(self, conversation_id):
-            return conversation_id or "conversation-test"
-
-        def build_context(self, conversation_id):
-            return {"summary": "", "messages": []}
-
-        def add_message(self, conversation_id, role, content, **kwargs):
-            self.messages.append((role, content, kwargs))
-
-        def all_messages_count(self, conversation_id):
-            return sum(role == "user" for role, _, _ in self.messages)
-
-        def update_title(self, conversation_id, title):
-            pass
-
-    irrelevant = WebSearchResult(
-        title="Myalgic encephalomyelitis / chronic fatigue syndrome - NICE",
-        url="https://www.nice.org.uk/guidance/ng206",
-        snippet="Recommendations on diagnosis and management of ME/CFS.",
-        rank=1,
-        domain="www.nice.org.uk",
-    )
-
-    class FakeGigaChat:
-        last_usage = {}
-        def __init__(self):
-            self.calls = 0
-            self.prompt = ""
-        def chat(self, prompt):
-            self.calls += 1
-            self.prompt = prompt
-            return "Могу дать общий справочный ответ, но в найденной базе подтверждающих материалов нет."
-
-    service = RagService.__new__(RagService)
-    service.memory = FakeMemory()
-    service.gigachat = FakeGigaChat()
-    service.search = lambda question, patient, top_k: []
-    service.web_search = SimpleNamespace(
-        search=lambda *args, **kwargs: WebSearchResponse("success", [irrelevant])
-    )
-
-    result = service.answer(
-        "Какие современные рекомендации по диагностике мигрени у взрослых?", None, 5
-    )
-
-    assert "Могу дать общий справочный ответ" in result["answer"]
-    assert "Надёжность ответа" in result["answer"]
-    assert result["source_checks_passed"] is False
-    assert all(source["source_type"] == "search_link" for source in result["sources"])
-    assert result["web_search_used"] is False
-    assert result["web_search_status"] == "no_relevant_results"
-    assert result["resource_usage"]["gigachat_calls"] == 1
-    assert "РЕЖИМ НЕПОДТВЕРЖДЁННОГО ОТВЕТА" in service.gigachat.prompt
-
-
-def test_rag_does_not_block_answer_when_web_body_has_no_answer_evidence(monkeypatch):
-    from types import SimpleNamespace
-    from app.services.web_search import WebSearchResponse
-
-    class Settings:
-        web_min_wiki_dense_similarity = 0.62
-        memory_follow_up_max_chars = 300
-
-    monkeypatch.setattr("app.services.rag.get_settings", lambda: Settings())
-
-    class FakeMemory:
-        def __init__(self):
-            self.messages = []
-        def ensure_conversation(self, conversation_id):
-            return conversation_id or "conversation-test"
-        def build_context(self, conversation_id):
-            return {"summary": "", "messages": []}
-        def add_message(self, conversation_id, role, content, **kwargs):
-            self.messages.append((role, content, kwargs))
-        def all_messages_count(self, conversation_id):
-            return sum(role == "user" for role, _, _ in self.messages)
-        def update_title(self, conversation_id, title):
-            pass
-
-    class FakeGigaChat:
-        last_usage = {}
-        def __init__(self):
-            self.calls = 0
-        def chat(self, prompt):
-            self.calls += 1
-            return "Подготовка к исследованию зависит от назначений клиники; уточните инструкцию у эндоскопического кабинета."
-
-    generic_body = WebSearchResult(
-        title="Migraine overview - NICE",
-        url="https://www.nice.org.uk/guidance/migraine",
-        snippet=(
-            "NICE guideline overview. Information about our service, how to navigate this page, "
-            "related resources, publishing history, cookies and site policies."
-        ),
-        rank=1,
-        domain="www.nice.org.uk",
-        verification_status="unverified",
-        verification_note="The page is on-topic but the excerpt does not support the requested diagnostic details.",
-    )
-    service = RagService.__new__(RagService)
-    service.memory = FakeMemory()
-    service.gigachat = FakeGigaChat()
-    service.search = lambda question, patient, top_k: []
-    service.web_search = SimpleNamespace(
-        search=lambda *args, **kwargs: WebSearchResponse("success", [generic_body])
-    )
-
-    result = service.answer("Какие рекомендации по диагностике мигрени у взрослых?", None, 5)
-
-    assert "Подготовка к исследованию" in result["answer"]
-    assert "Надёжность ответа" in result["answer"]
-    assert any(
-        source.get("source_type") == "web"
-        and source.get("verification_status") == "unverified"
-        for source in result["sources"]
-    )
-    assert any(source.get("source_type") == "search_link" for source in result["sources"])
-    assert result["source_checks_passed"] is False
-    assert result["web_search_status"] == "success"
-    assert result["resource_usage"]["gigachat_calls"] == 1
-    assert service.gigachat.calls == 1
-
-
-def test_rag_does_not_block_partial_answer_for_missing_medical_checklist_items(monkeypatch):
-    from types import SimpleNamespace
-    from app.services.web_search import WebSearchResponse
-
-    class Settings:
-        web_min_wiki_dense_similarity = 0.62
-        memory_follow_up_max_chars = 300
-        rag_max_web_sources = 2
-        rag_max_source_chars = 4200
-        rag_max_history_messages = 4
-        rag_max_history_message_chars = 600
-        gigachat_max_tokens = 450
-
-    monkeypatch.setattr("app.services.rag.get_settings", lambda: Settings())
-
-    class FakeMemory:
-        def __init__(self):
-            self.messages = []
-        def ensure_conversation(self, conversation_id):
-            return conversation_id or "conversation-test"
-        def build_context(self, conversation_id):
-            return {"summary": "", "messages": []}
-        def add_message(self, conversation_id, role, content, **kwargs):
-            self.messages.append((role, content, kwargs))
-        def all_messages_count(self, conversation_id):
-            return sum(role == "user" for role, _, _ in self.messages)
-        def update_title(self, conversation_id, title):
-            pass
-        def maybe_update_summary(self, conversation_id, gigachat):
-            pass
-
-    class FakeGigaChat:
-        def __init__(self):
-            self.calls = 0
-        def chat(self, prompt):
-            self.calls += 1
-            # Deliberately partial: no diary/red-flag checklist. Source relevance and
-            # citation integrity should pass without rigid post-generation medical checks.
-            return "Для диагностики мигрени с аурой оценивают характер головной боли и неврологические симптомы [WEB1]."
-
-    web_result = WebSearchResult(
-        title="Migraine with aura diagnosis - NICE",
-        url="https://www.nice.org.uk/guidance/cg150/chapter/recommendations",
-        snippet=(
-            "NICE recommendations for the diagnosis of migraine with aura in adults. "
-            "Typical aura symptoms may occur with or without headache. Consider clinical assessment "
-            "using headache characteristics and associated neurological symptoms."
-        ),
-        rank=1,
-        domain="www.nice.org.uk",
-    )
-
-    service = RagService.__new__(RagService)
-    service.memory = FakeMemory()
-    service.gigachat = FakeGigaChat()
-    service.search = lambda question, patient, top_k: []
-    service.web_search = SimpleNamespace(
-        search=lambda *args, **kwargs: WebSearchResponse("success", [web_result])
-    )
-
-    result = service.answer(
-        "Какие современные рекомендации по диагностике мигрени с аурой у взрослых?", None, 5
-    )
-
-    assert service.gigachat.calls == 1
-    assert result["resource_usage"]["gigachat_calls"] == 1
-    assert "характер головной боли" in result["answer"]
-    assert "[WEB1]" in result["answer"]
-    assert result["sources"][0]["source_id"] == "WEB1"
-    assert result["answer_reviewed"] is True
-    assert result["source_checks_passed"] is True
-    audit = result["answer_review_diagnostics"]
-    assert audit["status"] == "passed"
-    assert audit["stage"] == "source_attribution_and_facet_coverage"
-    assert audit["review_mode"] == "deterministic_source_attribution_and_facet_coverage"
-    assert audit["final_issues"] == []
-    assert audit["attempts"]["quality_review"] == 0
-    assert audit["attempts"]["content_repair"] == 0
-
-
 
 def test_web_recommendation_content_is_available_to_rag_content_review():
     """The complete fetched NICE chapter, not only its overview, is validation evidence."""
@@ -536,110 +330,6 @@ def test_web_recommendation_content_is_available_to_rag_content_review():
     assert "headache diary" in evidence["[WEB1]"]
     assert "with or without headache" in evidence["[WEB1]"]
 
-
-def test_diagnostic_answer_from_nice_source_returns_only_source_supported_claims(monkeypatch):
-    from app.services.web_search import WebSearchResponse
-
-    class Settings:
-        web_min_wiki_dense_similarity = 0.62
-        memory_follow_up_max_chars = 300
-        rag_max_web_sources = 2
-        rag_max_source_chars = 4200
-        rag_max_history_messages = 4
-        rag_max_history_message_chars = 600
-        gigachat_max_tokens = 450
-
-    monkeypatch.setattr("app.services.rag.get_settings", lambda: Settings())
-
-    class FakeMemory:
-        def __init__(self):
-            self.messages = []
-        def ensure_conversation(self, conversation_id):
-            return conversation_id or "conversation-test"
-        def build_context(self, conversation_id):
-            return {"summary": "", "messages": []}
-        def add_message(self, conversation_id, role, content, **kwargs):
-            self.messages.append((role, content, kwargs))
-        def all_messages_count(self, conversation_id):
-            return sum(role == "user" for role, _, _ in self.messages)
-        def update_title(self, conversation_id, title):
-            pass
-        def maybe_update_summary(self, conversation_id, gigachat):
-            pass
-
-    class FakeGigaChat:
-        def __init__(self):
-            self.calls = 0
-            self.prompt = ""
-        def chat(self, prompt):
-            self.calls += 1
-            self.prompt = prompt
-            return (
-                "## Оценка и диагностика\n"
-                "Боль может быть односторонней или двусторонней, умеренной или сильной; возможны "
-                "чувствительность к свету и звуку, тошнота или рвота [WEB1].\n\n"
-                "Приступ у взрослых длится от 4 до 72 часов. Эпизодическая мигрень бывает менее 15 дней "
-                "в месяц; хроническая — 15 или более дней, в том числе не менее 8 дней с признаками мигрени [WEB1].\n\n"
-                "Аура развивается постепенно в течение не менее 5 минут и длится 5–60 минут; она может "
-                "возникать перед началом головной боли или во время неё [WEB1].\n\n"
-                "Эти рекомендации относятся к взрослым пациентам старше 12 лет."
-            )
-
-    evidence = (
-        "NICE CG150 Recommendations. 1.1.1 Evaluate people with worsening headache with fever, "
-        "sudden-onset headache reaching maximum intensity within 5 minutes, new-onset neurological deficit, "
-        "new-onset cognitive dysfunction, change in personality, impaired level of consciousness, recent head trauma, "
-        "headache triggered by cough, Valsalva or sneeze, headache triggered by exercise, orthostatic headache, "
-        "symptoms suggestive of giant cell arteritis, acute narrow angle glaucoma or a substantial change in headache. "
-        "1.1.3 Consider using a headache diary to aid diagnosis. 1.1.4 Record frequency, duration and severity, "
-        "associated symptoms, medications, possible precipitants and relationship to menstruation for a minimum of 8 weeks. "
-        "1.2.1 Migraine pain location is unilateral or bilateral; pain quality is pulsating; pain intensity is moderate or severe; "
-        "it is aggravated by or causes avoidance of routine activities. Other symptoms are unusual sensitivity to light and/or sound "
-        "or nausea and/or vomiting. Duration of headache is 4 to 72 hours in adults. Episodic migraine occurs on fewer than 15 days "
-        "per month. Chronic migraine occurs on 15 or more days per month, with at least 8 days having features of migraine, "
-        "for more than 3 months. Symptoms of aura can occur with or without headache; they are fully reversible, develop gradually "
-        "over at least 5 minutes, and last 5 to 60 minutes. Typical aura symptoms include visual symptoms, sensory symptoms and speech disturbance."
-    )
-    web_result = WebSearchResult(
-        title="Headaches in over 12s: diagnosis and management - NICE",
-        url="https://www.nice.org.uk/guidance/cg150/chapter/recommendations",
-        snippet=evidence,
-        rank=1,
-        domain="www.nice.org.uk",
-    )
-
-    service = RagService.__new__(RagService)
-    service.memory = FakeMemory()
-    service.gigachat = FakeGigaChat()
-    service.search = lambda question, patient, top_k: []
-    service.web_search = SimpleNamespace(
-        search=lambda *args, **kwargs: WebSearchResponse("success", [web_result])
-    )
-
-    result = service.answer("Какие современные рекомендации по диагностике мигрени у взрослых?", None, 5)
-
-    assert service.gigachat.calls == 0
-    assert result["resource_usage"]["gigachat_calls"] == 0
-    assert result["resource_usage"]["max_output_tokens"] == 450
-    assert result["resource_usage"]["usage_source"] == "not_called"
-    assert result["resource_usage"]["estimated_input_tokens"] == 0
-    assert result["resource_usage"]["embedding_api_calls"] == 1
-    assert result["answer_reviewed"] is True
-    assert result["source_checks_passed"] is True
-    assert result["answer_review_diagnostics"]["status"] == "passed"
-    assert all(item["supported"] for item in result["answer_review_diagnostics"]["claim_attribution"])
-    assert result["answer_review_diagnostics"]["stage"] == "source_attribution_and_facet_coverage"
-    assert result["answer_validation_mode"] == "deterministic_source_attribution_and_facet_coverage"
-    assert result["answer_review_diagnostics"]["attempts"]["initial_generation"] is False
-    assert result["answer_review_diagnostics"]["attempts"]["quality_review"] == 0
-    assert "старше 12 лет" not in result["answer"]
-    assert "дневник" in result["answer"].casefold()
-    assert "обследование/направление" in result["answer"].casefold()
-    assert "4–72 часа" in result["answer"]
-    assert "односторонней или двусторонней" in result["answer"]
-    assert "5–60 минут" in result["answer"]
-    assert "15 дней" in result["answer"]
-    assert result["sources"][0]["source_id"] == "WEB1"
 
 
 def test_web_context_and_history_are_bounded_for_token_budget(monkeypatch):
@@ -671,7 +361,8 @@ def test_web_context_and_history_are_bounded_for_token_budget(monkeypatch):
     )
     assert "a" * 150 not in prompt
     assert "b" * 150 not in prompt
-    assert len(prompt) < 5000
+    # LOCAL_WIKI_ONLY policy text adds explicit instructions to the prompt.
+    assert len(prompt) < 6200
 
 
 def test_claim_attribution_binds_grand_mall_parking_to_wiki_evidence():

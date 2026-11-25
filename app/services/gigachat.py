@@ -6,6 +6,9 @@ from functools import lru_cache
 import requests
 
 from app.core.config import get_settings
+from app.services.langsmith_tracing import (
+    traceable_span, trace_gigachat_inputs, trace_gigachat_outputs
+)
 
 
 SYSTEM_PROMPT = (
@@ -98,6 +101,12 @@ class GigaChatClient:
             self._expires_at = float(payload.get("expires_at", now + 1800)) - self.settings.gigachat_token_safety_seconds
             return self._token
 
+    @traceable_span(
+        name="GigaChat completion",
+        run_type="llm",
+        process_inputs=trace_gigachat_inputs,
+        process_outputs=trace_gigachat_outputs,
+    )
     def chat_messages(self, messages: list[dict[str, str]]) -> str:
         token = self.get_access_token()
         url = f"{self.settings.gigachat_base_url.rstrip('/')}/chat/completions"
