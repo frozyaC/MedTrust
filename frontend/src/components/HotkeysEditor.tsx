@@ -6,6 +6,7 @@ import {
   formatHotkey,
   HOTKEY_IDS,
   HOTKEY_LABELS,
+  isReservedNavigationHotkey,
   Hotkey,
   HotkeyId,
   HotkeysConfig,
@@ -53,6 +54,11 @@ export const HotkeysEditor: FC<HotkeysEditorProps> = ({
       !event.code
     ) {
       setError('Выберите обычную клавишу или комбинацию клавиш.');
+      return;
+    }
+
+    if (isReservedNavigationHotkey(nextHotkey)) {
+      setError('↑, ↓ и Enter используются для навигации. Добавьте Alt, Ctrl, Shift или Meta.');
       return;
     }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Header } from './components/Header';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
@@ -224,7 +224,9 @@ export default function App() {
   const sidebarSearchRef = useRef<HTMLInputElement>(null);
   const questionInputRef = useRef<HTMLInputElement>(null);
   const followUpInputRef = useRef<HTMLInputElement>(null);
+  const questionHasFocusRef = useRef(false);
   const [sidebarHighlighted, setSidebarHighlighted] = useState(false);
+  const [pendingFocus, setPendingFocus] = useState<'patient' | 'question' | null>(null);
 
   const threadKey = selectedPatient?.id ?? UNASSIGNED_THREAD;
   const currentThread = threads[threadKey] ?? [];
@@ -233,6 +235,21 @@ export default function App() {
   const isLoading = latestItem?.status === 'loading';
   const latestCompleted = latestItem && latestItem.status !== 'loading';
   const messageCount = currentThread.length * 2;
+
+  useLayoutEffect(() => {
+    // Loading saved history can replace the focused question input with the composer.
+    if (
+      !pendingFocus &&
+      (!questionHasFocusRef.current || document.activeElement !== document.body)
+    ) return;
+
+    const input = pendingFocus === 'patient'
+      ? sidebarSearchRef.current
+      : hasThread ? followUpInputRef.current : questionInputRef.current;
+
+    input?.focus();
+    if (pendingFocus) setPendingFocus(null);
+  }, [pendingFocus, hasThread, selectedPatient?.id]);
 
   const questionPresets = useMemo(
     () => popularQuestions.categories.flatMap((category) => category.presets),
@@ -328,18 +345,12 @@ export default function App() {
       setScreenState(patientThread.length ? 'answer' : 'ready');
       setToastMessage(`Выбран пациент: ${patient.name}`);
 
-      // После выбора пациента переводим фокус в поле ввода
-      window.setTimeout(() => {
-        if (patientThread.length > 0) {
-          followUpInputRef.current?.focus();
-        } else {
-          questionInputRef.current?.focus();
-        }
-      }, 100);
+      setPendingFocus('question');
 
       return;
     }
 
+    setPendingFocus(null);
     setSelectedPatient(null);
     setScreenState(threads[UNASSIGNED_THREAD]?.length ? 'answer' : 'empty');
   };
@@ -347,9 +358,7 @@ export default function App() {
   const handleChangePatient = () => {
     handleSelectPatient(null);
     setSidebarHighlighted(true);
-    window.setTimeout(() => {
-      sidebarSearchRef.current?.focus();
-    }, 100);
+    setPendingFocus('patient');
     window.setTimeout(() => setSidebarHighlighted(false), 1600);
   };
 
@@ -653,6 +662,8 @@ export default function App() {
   // Настраиваемые горячие клавиши
   useEffect(() => {
     const handleKeyboardShortcuts = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+
       const target = event.target;
 
       // Не перехватываем клавиши внутри модальных окон
@@ -877,7 +888,23 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-[#EFF6FF] text-[#0F172A] font-sans antialiased overflow-hidden">
+    <div
+      className="h-screen flex flex-col bg-[#EFF6FF] text-[#0F172A] font-sans antialiased overflow-hidden"
+      onFocusCapture={(event) => {
+        questionHasFocusRef.current =
+          event.target === questionInputRef.current || event.target === followUpInputRef.current;
+      }}
+      onBlurCapture={() => { questionHasFocusRef.current = false; }}
+      onKeyDown={(event) => {
+        // Holding Enter after selecting a patient must not submit a draft question.
+        if (
+          event.key === 'Enter' && event.repeat &&
+          (event.target === questionInputRef.current || event.target === followUpInputRef.current)
+        ) {
+          event.preventDefault();
+        }
+      }}
+    >
       <Header
         onLogout={handleLogout}
         onOpenHotkeys={() => setIsHotkeysEditorOpen(true)}

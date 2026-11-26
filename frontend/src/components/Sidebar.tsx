@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { Patient } from '../types';
 import { PatientCard } from './PatientCard';
-import { AlertCircle, Search, Users, X } from 'lucide-react';
+import { Search, Users, X } from 'lucide-react';
 
 interface SidebarProps {
   patients: Patient[];
@@ -20,7 +20,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<'today' | 'my' | 'all'>('all');
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activePatientId, setActivePatientId] = useState<string | null>(null);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const internalSearchRef = useRef<HTMLInputElement>(null);
+  const inputRef = searchInputRef ?? internalSearchRef;
+  const activeOptionRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
+  const hintId = useId();
 
   const filteredPatients = patients.filter((p) => {
     const query = searchQuery.toLowerCase().trim();
@@ -33,35 +39,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
     );
   });
 
+  const activePatient =
+    filteredPatients.find((patient) => patient.id === activePatientId) ?? filteredPatients[0];
+
+  useLayoutEffect(() => {
+    if (isSearchFocused) {
+      activeOptionRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [activePatient?.id, searchQuery, isSearchFocused]);
+
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-
-      if (filteredPatients.length === 0) return;
-
-      setActiveIndex((current) =>
-        Math.min(current + 1, filteredPatients.length - 1),
-      );
+    if (
+      event.nativeEvent.isComposing ||
+      event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+      !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)
+    ) {
       return;
     }
 
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-
-      if (filteredPatients.length === 0) return;
-
-      setActiveIndex((current) => Math.max(current - 1, 0));
-      return;
-    }
+    event.preventDefault();
+    event.stopPropagation();
 
     if (event.key === 'Enter') {
-      event.preventDefault();
-
-      const patient = filteredPatients[activeIndex];
-      if (patient) {
-        onSelectPatient(patient);
+      if (activePatient && !event.repeat) {
+        onSelectPatient(activePatient);
       }
+      return;
     }
+
+    if (filteredPatients.length === 0) return;
+
+    const direction = event.key === 'ArrowDown' ? 1 : -1;
+    setActivePatientId((current) => {
+      const index = Math.max(0, filteredPatients.findIndex((patient) => patient.id === current));
+      const nextIndex = Math.max(0, Math.min(index + direction, filteredPatients.length - 1));
+      return filteredPatients[nextIndex].id;
+    });
   };
 
   return (
@@ -93,13 +106,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="relative mb-3">
           <Search className="w-4 h-4 text-[#94A3B8] absolute left-3 top-1/2 -translate-y-1/2" />
           <input
-            ref={searchInputRef}
+            ref={inputRef}
             type="text"
+            role="combobox"
+            aria-label="Поиск пациента"
+            aria-autocomplete="list"
+            aria-expanded={true}
+            aria-controls={listboxId}
+            aria-describedby={hintId}
+            aria-activedescendant={
+              isSearchFocused && activePatient ? `${listboxId}-${activePatient.id}` : undefined
+            }
             value={searchQuery}
             onChange={(e) => {
               setSearchQuery(e.target.value);
-              setActiveIndex(0);
+              setActivePatientId(null);
             }}
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => setIsSearchFocused(false)}
             onKeyDown={handleSearchKeyDown}
             placeholder="Поиск по ФИО, телефону или карте"
             className="w-[100%] pl-9 pr-3 py-2 bg-white text-xs text-[#0F172A] border border-[#BFDBFE] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#3B82F6] focus:border-transparent transition-all placeholder:text-[#94A3B8]"
@@ -108,8 +132,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               onClick={() => {
                 setSearchQuery('');
-                setActiveIndex(0);
+                setActivePatientId(null);
+                inputRef.current?.focus();
               }}
+              aria-label="Очистить поиск пациента"
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-[#0F172A]"
             >
               <X className="w-3.5 h-3.5" />
@@ -117,13 +143,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
-        {/* Selected patient banner */}
-        {/* {!selectedPatient && (
-          <div className="mb-3 flex items-center gap-2 rounded-lg border border-[#FDE68A] border-l-4 border-l-[#F59E0B] bg-[#FEF3C7] px-3 py-2 text-xs">
-            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[#B45309]" />
-            <span className="font-semibold text-[#B45309]">Пациент не выбран</span>
-          </div>
-        )} */}
+        <p id={hintId} className="mb-3 text-xs text-[#475569]">
+          ↑↓ — перемещение · Enter — выбрать
+        </p>
 
         {/* Filter chips */}
         <div className="flex gap-1.5 p-0.5 bg-[#DBEAFE]/50 rounded-lg text-xs font-medium">
@@ -161,13 +183,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Patient Cards List */}
-      <div className="flex-1 overflow-y-auto px-3 pt-3 pb-6 space-y-2.5">
+      <div
+        id={listboxId}
+        role="listbox"
+        aria-label="Пациенты"
+        className="flex-1 overflow-y-auto px-3 pt-3 pb-6 space-y-2.5"
+      >
         {filteredPatients.length > 0 ? (
-          filteredPatients.map((patient, index) => (
+          filteredPatients.map((patient) => (
             <div
               key={patient.id}
+              id={`${listboxId}-${patient.id}`}
+              role="option"
+              aria-label={patient.name}
+              aria-selected={selectedPatient?.id === patient.id}
+              ref={activePatient?.id === patient.id ? activeOptionRef : undefined}
               className={`rounded-xl transition-all ${
-                activeIndex === index
+                isSearchFocused && activePatient?.id === patient.id
                   ? 'ring-2 ring-[#2563EB] ring-offset-2 ring-offset-[#F0F7FF]'
                   : ''
               }`}
@@ -175,9 +207,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <PatientCard
                 patient={patient}
                 isSelected={selectedPatient?.id === patient.id}
-                onSelect={(p) =>
-                  onSelectPatient(selectedPatient?.id === p.id ? null : p)
-                }
+                onSelect={(p) => {
+                  setActivePatientId(p.id);
+                  onSelectPatient(selectedPatient?.id === p.id ? null : p);
+                }}
               />
             </div>
           ))

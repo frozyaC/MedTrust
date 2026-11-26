@@ -52,6 +52,13 @@ export const HOTKEY_LABELS: Record<HotkeyId, string> = {
 
 export const HOTKEY_IDS = Object.keys(DEFAULT_HOTKEYS) as HotkeyId[];
 
+export function isReservedNavigationHotkey(hotkey: Hotkey): boolean {
+  return (
+    !hotkey.alt && !hotkey.ctrl && !hotkey.shift && !hotkey.meta &&
+    ['ArrowUp', 'ArrowDown', 'Enter', 'NumpadEnter'].includes(hotkey.code)
+  );
+}
+
 export function loadHotkeys(): HotkeysConfig {
   try {
     const raw = window.localStorage.getItem(HOTKEYS_STORAGE_KEY);
@@ -68,7 +75,8 @@ export function loadHotkeys(): HotkeysConfig {
           typeof saved.alt === 'boolean' &&
           typeof saved.ctrl === 'boolean' &&
           typeof saved.shift === 'boolean' &&
-          typeof saved.meta === 'boolean';
+          typeof saved.meta === 'boolean' &&
+          !isReservedNavigationHotkey(saved);
 
         return [id, valid ? saved : DEFAULT_HOTKEYS[id]];
       }),
