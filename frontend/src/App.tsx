@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from './components/Header';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
@@ -22,7 +22,6 @@ import { FeedbackReasonCode, getFeedbackReason } from './data/feedbackReasons';
 import {
   AnswerData,
   ConversationItem,
-  FeedbackRating,
   Patient,
   ScreenState,
   Source,
@@ -33,7 +32,6 @@ import {
   FileQuestion,
   Pencil,
   RefreshCw,
-  Search,
   Sparkles,
   UserCheck,
 } from 'lucide-react';
@@ -46,7 +44,6 @@ import {
   savePopularQuestions,
 } from './data/popularQuestions';
 import {
-  DEFAULT_SUGGESTIONS,
   loadSuggestions,
   saveSuggestions,
 } from './data/suggestionQuestions';
@@ -230,93 +227,6 @@ export default function App() {
     [popularQuestions],
   );
 
-  // Горячие клавиши Alt+1–9, Alt+Z и Alt+X
-  useEffect(() => {
-    const handleKeyboardShortcuts = (event: KeyboardEvent) => {
-      if (
-        !event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey ||
-        hasThread === undefined
-      ) {
-        return;
-      }
-
-      const target = event.target;
-
-      // Не перехватываем клавиши, когда открыто модальное окно
-      if (
-        target instanceof HTMLElement &&
-        target.closest('[role="dialog"]')
-      ) {
-        return;
-      }
-
-      // Alt+Z — фокус на поиск пациента
-      if (event.code === 'KeyZ') {
-        event.preventDefault();
-        sidebarSearchRef.current?.focus();
-        return;
-      }
-
-      // Alt+X — фокус на поле вопроса или уточнения
-      if (event.code === 'KeyX') {
-        event.preventDefault();
-
-        if (hasThread) {
-          followUpInputRef.current?.focus();
-        } else {
-          questionInputRef.current?.focus();
-        }
-
-        return;
-      }
-
-      // Alt+1–9 — вставка обычного вопроса или уточнения
-      const match = event.code.match(/^(?:Digit|Numpad)([1-9])$/);
-      if (!match) return;
-
-      const shortcut = match[1];
-      const index = Number(shortcut) - 1;
-
-      if (hasThread) {
-        // Если диалог открыт — берём уточняющие вопросы
-        const preset = suggestions.suggestions[index];
-        if (!preset) return;
-
-        event.preventDefault();
-
-        setSuggestion('');
-        window.setTimeout(() => {
-          setSuggestion(preset.label);
-          followUpInputRef.current?.focus();
-        }, 0);
-
-        return;
-      }
-
-      // Если диалога нет — берём обычные вопросы
-      const preset =
-        questionPresets.find((item) => item.shortcut === shortcut) ??
-        questionPresets[index];
-
-      if (!preset) return;
-
-      event.preventDefault();
-
-      setSuggestion('');
-      window.setTimeout(() => setSuggestion(preset.value), 0);
-    };
-
-    window.addEventListener('keydown', handleKeyboardShortcuts);
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyboardShortcuts);
-    };
-  }, [hasThread, questionPresets, suggestions]);
-
-
   useEffect(() => {
     if (!hasThread || !latestItem) return;
     const el = document.getElementById(`message-${latestItem.id}`);
@@ -398,13 +308,26 @@ export default function App() {
         delete next[UNASSIGNED_THREAD];
         return next;
       });
+
       dropConversationIds(UNASSIGNED_THREAD);
       setSelectedPatient(patient);
+
       const patientThread = threads[patient.id] ?? [];
       setScreenState(patientThread.length ? 'answer' : 'ready');
       setToastMessage(`Выбран пациент: ${patient.name}`);
+
+      // После выбора пациента переводим фокус в поле ввода
+      window.setTimeout(() => {
+        if (patientThread.length > 0) {
+          followUpInputRef.current?.focus();
+        } else {
+          questionInputRef.current?.focus();
+        }
+      }, 100);
+
       return;
     }
+
     setSelectedPatient(null);
     setScreenState(threads[UNASSIGNED_THREAD]?.length ? 'answer' : 'empty');
   };
@@ -714,60 +637,167 @@ export default function App() {
     setToastMessage('Новый диалог. Выберите пациента и задайте вопрос.');
   };
 
+
+  // Горячие клавиши Alt+1–9, Alt+Z и Alt+X
+  useEffect(() => {
+    const handleKeyboardShortcuts = (event: KeyboardEvent) => {
+      if (
+        !event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+
+      const target = event.target;
+
+      // Не перехватываем клавиши, когда открыто модальное окно
+      if (
+        target instanceof HTMLElement &&
+        target.closest('[role="dialog"]')
+      ) {
+        return;
+      }
+
+      // Alt+Z — фокус на поиск пациента
+      if (event.code === 'KeyZ') {
+        event.preventDefault();
+        sidebarSearchRef.current?.focus();
+        return;
+      }
+
+      // Alt+X — фокус на поле вопроса или уточнения
+      if (event.code === 'KeyX') {
+        event.preventDefault();
+
+        if (hasThread) {
+          followUpInputRef.current?.focus();
+        } else {
+          questionInputRef.current?.focus();
+        }
+
+        return;
+      }
+
+      // Alt+Q — новый диалог со сбросом пациента
+      if (event.code === 'KeyQ') {
+        event.preventDefault();
+        clearConversation();
+        return;
+      }
+
+      // Alt+R — сброс выбранного пациента
+      if (event.code === 'KeyR') {
+        event.preventDefault();
+        handleChangePatient();
+        return;
+      }
+
+      // Alt+1–9 — вставка обычного вопроса или уточнения
+      const match = event.code.match(/^(?:Digit|Numpad)([1-9])$/);
+      if (!match) return;
+
+      const shortcut = match[1];
+      const index = Number(shortcut) - 1;
+
+      if (hasThread) {
+        // Если диалог открыт — берём уточняющие вопросы
+        const preset = suggestions.suggestions[index];
+        if (!preset) return;
+
+        event.preventDefault();
+
+        setSuggestion('');
+        window.setTimeout(() => {
+          setSuggestion(preset.label);
+          followUpInputRef.current?.focus();
+        }, 0);
+
+        return;
+      }
+
+      // Если диалога нет — берём обычные вопросы
+      const preset =
+        questionPresets.find((item) => item.shortcut === shortcut) ??
+        questionPresets[index];
+
+      if (!preset) return;
+
+      event.preventDefault();
+
+      setSuggestion('');
+      window.setTimeout(() => setSuggestion(preset.value), 0);
+    };
+
+    window.addEventListener('keydown', handleKeyboardShortcuts);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyboardShortcuts);
+    };
+  }, [
+    hasThread,
+    questionPresets,
+    suggestions,
+    clearConversation,
+    handleChangePatient,
+  ]);
+
+
   /**
    * Демо-режим для StateSelector. Использует `demoItem` / `makeDemoAnswer`
    */
-  const selectDemoState = (state: ScreenState) => {
-    setScreenState(state);
-    setHighlightedSource(null);
+  // const selectDemoState = (state: ScreenState) => {
+  //   setScreenState(state);
+  //   setHighlightedSource(null);
 
-    if (state === 'empty') {
-      setSelectedPatient(null);
-      setThreads((current) => ({ ...current, [UNASSIGNED_THREAD]: [] }));
-      dropConversationIds(UNASSIGNED_THREAD);
-      return;
-    }
+  //   if (state === 'empty') {
+  //     setSelectedPatient(null);
+  //     setThreads((current) => ({ ...current, [UNASSIGNED_THREAD]: [] }));
+  //     dropConversationIds(UNASSIGNED_THREAD);
+  //     return;
+  //   }
 
-    setSelectedPatient(MOCK_PATIENTS[0]);
-    dropConversationIds(UNASSIGNED_THREAD, 'crm-1001');
-    setThreads((current) => {
-      const next = { ...current };
-      delete next[UNASSIGNED_THREAD];
+  //   setSelectedPatient(MOCK_PATIENTS[0]);
+  //   dropConversationIds(UNASSIGNED_THREAD, 'crm-1001');
+  //   setThreads((current) => {
+  //     const next = { ...current };
+  //     delete next[UNASSIGNED_THREAD];
 
-      if (state === 'ready') next['crm-1001'] = [];
-      if (state === 'answer') next['crm-1001'] = oneAnswerThread();
-      if (state === 'history') next['crm-1001'] = historyThread();
-      if (state === 'loading') {
-        next['crm-1001'] = [
-          demoItem('demo-loading', 'Как подготовиться к гастроскопии?', '14:32', 'loading'),
-        ];
-      }
-      if (state === 'no_answer' || state === 'error') {
-        next['crm-1001'] = [
-          demoItem(
-            `demo-${state}`,
-            'Как подготовиться к гастроскопии?',
-            '14:32',
-            state,
-          ),
-        ];
-      }
-      if (state === 'conflict') {
-        next['crm-1001'] = [
-          {
-            ...demoItem(
-              'demo-conflict',
-              'Как подготовиться к гастроскопии?',
-              '14:32',
-              'conflict',
-            ),
-            sourcesExpanded: true,
-          },
-        ];
-      }
-      return next;
-    });
-  };
+  //     if (state === 'ready') next['crm-1001'] = [];
+  //     if (state === 'answer') next['crm-1001'] = oneAnswerThread();
+  //     if (state === 'history') next['crm-1001'] = historyThread();
+  //     if (state === 'loading') {
+  //       next['crm-1001'] = [
+  //         demoItem('demo-loading', 'Как подготовиться к гастроскопии?', '14:32', 'loading'),
+  //       ];
+  //     }
+  //     if (state === 'no_answer' || state === 'error') {
+  //       next['crm-1001'] = [
+  //         demoItem(
+  //           `demo-${state}`,
+  //           'Как подготовиться к гастроскопии?',
+  //           '14:32',
+  //           state,
+  //         ),
+  //       ];
+  //     }
+  //     if (state === 'conflict') {
+  //       next['crm-1001'] = [
+  //         {
+  //           ...demoItem(
+  //             'demo-conflict',
+  //             'Как подготовиться к гастроскопии?',
+  //             '14:32',
+  //             'conflict',
+  //           ),
+  //           sourcesExpanded: true,
+  //         },
+  //       ];
+  //     }
+  //     return next;
+  //   });
+  // };
 
   const popularQuestionsContent = useMemo(
     () => (
@@ -850,6 +880,40 @@ export default function App() {
     <div className="h-screen flex flex-col bg-[#EFF6FF] text-[#0F172A] font-sans antialiased overflow-hidden">
       <Header onLogout={handleLogout} />
       {/* <StateSelector currentState={screenState} onSelectState={selectDemoState} /> */}
+
+
+      <div className="shrink-0 border-b border-[#BFDBFE] bg-white px-4 py-2">
+        <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-[#64748B]">
+          <span className="font-semibold text-[#475569]">
+            Горячие клавиши:
+          </span>
+
+          <span className="flex items-center gap-1.5">
+            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+Z</kbd>
+            Поиск пациента
+          </span>
+
+          <span className="flex items-center gap-1.5">
+            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+X</kbd>
+            Поле вопроса
+          </span>
+
+          <span className="flex items-center gap-1.5">
+            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+Q</kbd>
+            Новый диалог
+          </span>
+
+          <span className="flex items-center gap-1.5">
+            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+R</kbd>
+            Сброс пациента
+          </span>
+
+          <span className="flex items-center gap-1.5">
+            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+1–9</kbd>
+            Шаблоны вопросов / уточнений
+          </span>
+        </div>
+      </div>
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <Sidebar

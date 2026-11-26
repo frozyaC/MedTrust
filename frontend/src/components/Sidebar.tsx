@@ -20,6 +20,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<'today' | 'my' | 'all'>('all');
+  const [activeIndex, setActiveIndex] = useState(0);
 
   const filteredPatients = patients.filter((p) => {
     const query = searchQuery.toLowerCase().trim();
@@ -31,6 +32,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
       p.contraindications.some((ci) => ci.toLowerCase().includes(query))
     );
   });
+
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+
+      if (filteredPatients.length === 0) return;
+
+      setActiveIndex((current) =>
+        Math.min(current + 1, filteredPatients.length - 1),
+      );
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+
+      if (filteredPatients.length === 0) return;
+
+      setActiveIndex((current) => Math.max(current - 1, 0));
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+
+      const patient = filteredPatients[activeIndex];
+      if (patient) {
+        onSelectPatient(patient);
+      }
+    }
+  };
 
   return (
     <aside
@@ -64,13 +96,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
             ref={searchInputRef}
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setActiveIndex(0);
+            }}
+            onKeyDown={handleSearchKeyDown}
             placeholder="Поиск по ФИО, телефону или карте"
             className="w-[100%] pl-9 pr-3 py-2 bg-white text-xs text-[#0F172A] border border-[#BFDBFE] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#3B82F6] focus:border-transparent transition-all placeholder:text-[#94A3B8]"
           />
           {searchQuery && (
             <button
-              onClick={() => setSearchQuery('')}
+              onClick={() => {
+                setSearchQuery('');
+                setActiveIndex(0);
+              }}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-[#0F172A]"
             >
               <X className="w-3.5 h-3.5" />
@@ -124,13 +163,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Patient Cards List */}
       <div className="flex-1 overflow-y-auto px-3 pt-3 pb-6 space-y-2.5">
         {filteredPatients.length > 0 ? (
-          filteredPatients.map((patient) => (
-            <PatientCard
+          filteredPatients.map((patient, index) => (
+            <div
               key={patient.id}
-              patient={patient}
-              isSelected={selectedPatient?.id === patient.id}
-              onSelect={(p) => onSelectPatient(selectedPatient?.id === p.id ? null : p)}
-            />
+              className={`rounded-xl transition-all ${
+                activeIndex === index
+                  ? 'ring-2 ring-[#2563EB] ring-offset-2 ring-offset-[#F0F7FF]'
+                  : ''
+              }`}
+            >
+              <PatientCard
+                patient={patient}
+                isSelected={selectedPatient?.id === patient.id}
+                onSelect={(p) =>
+                  onSelectPatient(selectedPatient?.id === p.id ? null : p)
+                }
+              />
+            </div>
           ))
         ) : (
           <div className="text-center py-8 px-4 text-[#475569]">
