@@ -1,3 +1,4 @@
+import { apiBaseUrl, apiFetch } from './client';
 import { AnswerData, ConversationItem, Patient, Source, WebSearchData } from '../types';
 
 export class QueryApiError extends Error {
@@ -61,9 +62,6 @@ interface StoredChatMessage {
 // const NO_ANSWER_TEXT = 'не найден подтверждающий источник';
 const TIME_FORMAT: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
 
-function apiBaseUrl(): string {
-  return import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
-}
 
 function formatTimestamp(iso?: string): string {
   const date = iso ? new Date(iso) : new Date();
@@ -190,7 +188,7 @@ export async function askKnowledgeBase(
   conversationId?: string,
 ): Promise<QueryResponse> {
   const patientPayload = toPatientPayload(patient);
-  const response = await fetch(`${apiBaseUrl()}/api/v1/query`, {
+  const response = await apiFetch(`${apiBaseUrl()}/api/v1/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -317,7 +315,7 @@ export async function sendFeedback(payload: {
   question?: string;
   conversationId?: string;
 }): Promise<{ status: string; gap_recorded?: boolean }> {
-  const response = await fetch(`${apiBaseUrl()}/api/v1/feedback`, {
+  const response = await apiFetch(`${apiBaseUrl()}/api/v1/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -339,7 +337,7 @@ export async function sendFeedback(payload: {
  * Отмена автоматически зафиксированного пробела в БЗ.
  */
 export async function cancelGap(gapId: string | number, note?: string): Promise<void> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${apiBaseUrl()}/api/v1/knowledge-gaps/${encodeURIComponent(String(gapId))}`,
     {
       method: 'PATCH',
@@ -374,7 +372,7 @@ export async function askWebSearch(
 ): Promise<WebSearchData> {
   let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl()}/api/v1/web-search`, {
+    response = await apiFetch(`${apiBaseUrl()}/api/v1/web-search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question, limit }),
@@ -402,7 +400,7 @@ export async function askWebSearch(
 export async function loadConversationItems(conversationId: string): Promise<ConversationItem[]> {
   let response: Response;
   try {
-    response = await fetch(
+    response = await apiFetch(
       `${apiBaseUrl()}/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
     );
   } catch {

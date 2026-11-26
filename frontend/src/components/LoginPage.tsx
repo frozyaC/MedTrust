@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { LogIn, AlertCircle } from 'lucide-react';
 
 interface LoginPageProps {
-  onLogin: (login: string, password: string) => void;
+  onLogin: (login: string, password: string) => Promise<void>;
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
@@ -11,20 +11,28 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setError(null);
 
-    if (!login.trim() || !password.trim()) {
+    if (!login.trim() || !password) {
       setError('Введите логин и пароль');
       return;
     }
 
+    if (new TextEncoder().encode(password).length > 72) {
+      setError('Пароль не должен превышать 72 байта UTF-8');
+      return;
+    }
     setIsSubmitting(true);
-    // Имитация задержки — чтобы было видно «Вход...» на кнопке
-    window.setTimeout(() => {
-      onLogin(login.trim(), password);
-    }, 300);
+    try {
+      await onLogin(login.trim(), password);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Не удалось войти. Повторите попытку.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (

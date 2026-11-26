@@ -1,9 +1,7 @@
+import { apiBaseUrl, apiFetch } from './client';
 import { WikiDocumentContent } from '../types';
 import { QueryApiError } from './query';
 
-function apiBaseUrl(): string {
-  return import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
-}
 
 /**
  * Полный Markdown-текст статьи из локальной БД.
@@ -11,7 +9,7 @@ function apiBaseUrl(): string {
 export async function fetchWikiContent(documentId: string): Promise<WikiDocumentContent> {
   let response: Response;
   try {
-    response = await fetch(
+    response = await apiFetch(
       `${apiBaseUrl()}/api/v1/knowledge/${encodeURIComponent(documentId)}/content`,
     );
   } catch {

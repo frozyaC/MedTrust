@@ -14,7 +14,6 @@ export type GapSort = 'newest' | 'oldest' | 'longest';
 
 export type GapPeriod = 'today' | '7d' | '30d' | 'custom';
 
-export type AdminRole = 'kb_owner' | 'developer';
 
 export type DismissReason = 'duplicate' | 'out_of_scope' | 'not_a_gap';
 

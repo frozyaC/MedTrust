@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,9 @@ class Settings(BaseSettings):
 
     postgres_dsn: str = "postgresql://medtrust:medtrust@localhost:5433/medtrust"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    auth_cookie_name: str = "medtrust_session"
+    auth_cookie_secure: bool = False
+    auth_session_hours: int = Field(default=12, ge=1, le=168)
     knowledge_index_archive: str = "data/kb_kardio_klinika.zip"
 
     chunk_size_chars: int = 2200

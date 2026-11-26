@@ -1,5 +1,6 @@
 import React from 'react';
 import { HelpCircle, BookOpen, LogOut, Map, Keyboard } from 'lucide-react';
+import { useAuth, userInitials, userRoleLabel } from '../auth/AuthContext';
 
 interface HeaderProps {
   onLogout?: () => void;
@@ -10,6 +11,8 @@ export const Header: React.FC<HeaderProps> = ({
   onLogout,
   onOpenHotkeys,
 }) => {
+  const { user } = useAuth();
+  if (!user) return null;
   return (
     <header className="h-[64px] bg-white border-b border-[#BFDBFE] px-6 flex items-center justify-between shrink-0 select-none z-10 shadow-xs">
       {/* Left section: Logo & Clinic Name & Status Chips */}
@@ -51,7 +54,7 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right section: Role, Name, Help, Avatar */}
       <div className="flex items-center gap-4">
-        <button
+        {user.role === 'kb_owner' && <button
           type="button"
           onClick={() => window.location.assign('/admin/knowledge-gaps')}
           className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[#2563EB] hover:bg-[#EFF6FF] transition-colors"
@@ -59,7 +62,7 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Map className="w-4 h-4" />
           Карта пробелов
-        </button>
+        </button>}
 
         <button
           type="button"
@@ -72,8 +75,8 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <div className="text-right">
-          <div className="text-xs text-[#94A3B8] font-medium">Регистратор</div>
-          <div className="text-sm font-semibold text-[#0F172A]">Иванова М.А.</div>
+          <div className="text-xs text-[#94A3B8] font-medium">{userRoleLabel(user)}</div>
+          <div className="text-sm font-semibold text-[#0F172A]">{user.name}</div>
         </div>
 
         <button 
@@ -95,7 +98,7 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         <div className="w-9 h-9 rounded-full bg-[#DBEAFE] border-2 border-[#93C5FD] flex items-center justify-center text-[#2563EB] font-bold text-sm shadow-xs">
-          ИМ
+          {userInitials(user.name)}
         </div>
       </div>
     </header>

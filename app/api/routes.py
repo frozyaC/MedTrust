@@ -1,7 +1,9 @@
 import logging
 from datetime import date
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+
+from app.core.auth import CurrentUser, get_current_user, require_kb_owner, verify_request_origin
 
 from app.db.database import get_connection, init_db
 from app.db.repository import ConversationRepository, KnowledgeRepository
@@ -27,7 +29,9 @@ from app.services.rag import RagService
 from app.services.manual_web_search import manual_web_answer
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1")
+public_router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(verify_request_origin), Depends(get_current_user)])
+admin_router = APIRouter(prefix="/api/v1", dependencies=[Depends(verify_request_origin), Depends(require_kb_owner)])
 
 
 def _messages_with_feedback(messages: list[dict]) -> list[dict]:
@@ -55,7 +59,7 @@ def web_search(request: ManualWebSearchRequest) -> dict:
         raise HTTPException(status_code=502, detail=f"Ошибка веб-поиска: {exc}") from exc
 
 
-@router.get("/health")
+@public_router.get("/health")
 def health() -> dict:
     try:
         with get_connection() as conn:
@@ -65,7 +69,7 @@ def health() -> dict:
         return {"status": "degraded", "database": f"error: {exc}"}
 
 
-@router.post("/knowledge/reindex")
+@admin_router.post("/knowledge/reindex")
 def reindex(file: UploadFile = File(...)) -> dict:
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Ожидается ZIP-архив с Markdown-файлами")
@@ -189,7 +193,7 @@ def feedback(request: FeedbackRequest) -> dict:
         )
     return {"status": "saved", "gap_recorded": gap_recorded}
 
-@router.get("/knowledge-gaps")
+@admin_router.get("/knowledge-gaps")
 def list_knowledge_gaps(
     status: str | None = None,
     source: str | None = None,
@@ -213,7 +217,7 @@ def list_knowledge_gaps(
         raise HTTPException(status_code=500, detail="Ошибка загрузки пробелов БЗ") from exc
 
 
-@router.get("/knowledge-gaps/metrics")
+@admin_router.get("/knowledge-gaps/metrics")
 def knowledge_gap_metrics(date_from: date | None = None, date_to: date | None = None) -> dict:
     try:
         return GapMapService().metrics(date_from=date_from, date_to=date_to)
@@ -222,7 +226,7 @@ def knowledge_gap_metrics(date_from: date | None = None, date_to: date | None = 
         raise HTTPException(status_code=500, detail="Ошибка загрузки метрик карты пробелов") from exc
 
 
-@router.get("/knowledge-gaps/{gap_id}/events")
+@admin_router.get("/knowledge-gaps/{gap_id}/events")
 def knowledge_gap_events(gap_id: int) -> list[dict]:
     try:
         return GapMapService().list_gap_events(gap_id)
@@ -231,7 +235,7 @@ def knowledge_gap_events(gap_id: int) -> list[dict]:
         raise HTTPException(status_code=500, detail="Ошибка загрузки истории пробела") from exc
 
 
-@router.get("/knowledge-gaps/{gap_id}/history")
+@admin_router.get("/knowledge-gaps/{gap_id}/history")
 def knowledge_gap_status_history(gap_id: int) -> list[dict]:
     try:
         return GapMapService().list_gap_status_history(gap_id)
@@ -240,13 +244,14 @@ def knowledge_gap_status_history(gap_id: int) -> list[dict]:
         raise HTTPException(status_code=500, detail="Ошибка загрузки истории статусов пробела") from exc
 
 
-@router.post("/knowledge-gaps/{gap_id}/detach-cluster")
+@admin_router.post("/knowledge-gaps/{gap_id}/detach-cluster")
 def detach_knowledge_gap_cluster_suggestion(
     gap_id: int, request: GapClusterDetachRequest,
+    user: CurrentUser = Depends(require_kb_owner),
 ) -> dict:
     try:
         return GapMapService().detach_cluster_suggestion(
-            gap_id, reason=request.reason, author=request.author,
+            gap_id, reason=request.reason, author=user.name,
         )
     except ValueError as exc:
         code = 404 if "не найден" in str(exc).casefold() else 409
@@ -256,7 +261,7 @@ def detach_knowledge_gap_cluster_suggestion(
         raise HTTPException(status_code=500, detail="Ошибка отвязки пробела от кластера-кандидата") from exc
 
 
-@router.get("/knowledge-gaps/clusters")
+@admin_router.get("/knowledge-gaps/clusters")
 def list_knowledge_gap_clusters(limit: int = 500) -> list[dict]:
     # Legacy projection retained for existing clients. New owner-managed groups are
     # exposed by /knowledge-gap-groups and never auto-confirmed by similarity.
@@ -268,11 +273,12 @@ def list_knowledge_gap_clusters(limit: int = 500) -> list[dict]:
         raise HTTPException(status_code=500, detail=f"Ошибка загрузки групп пробелов: {exc}") from exc
 
 
-@router.patch("/knowledge-gaps/{gap_id}")
-def update_knowledge_gap(gap_id: int, request: GapStatusRequest) -> dict:
+@admin_router.patch("/knowledge-gaps/{gap_id}")
+def update_knowledge_gap(gap_id: int, request: GapStatusRequest,
+                         user: CurrentUser = Depends(require_kb_owner)) -> dict:
     try:
         updated = GapMapService().update_gap_status(
-            gap_id, request.status, note=request.note, author=request.author,
+            gap_id, request.status, note=request.note, author=user.name,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -284,13 +290,14 @@ def update_knowledge_gap(gap_id: int, request: GapStatusRequest) -> dict:
     return {"status": request.status, "gap_id": gap_id}
 
 
-@router.post("/knowledge-gaps/{gap_id}/comments")
-def add_knowledge_gap_comment(gap_id: int, request: GapCommentRequest) -> dict:
+@admin_router.post("/knowledge-gaps/{gap_id}/comments")
+def add_knowledge_gap_comment(gap_id: int, request: GapCommentRequest,
+                              user: CurrentUser = Depends(require_kb_owner)) -> dict:
     body = request.body.strip()
     if not body:
         raise HTTPException(status_code=400, detail="Комментарий пуст")
     try:
-        comment = KnowledgeGapTracker().add_comment(gap_id, request.author.strip(), body)
+        comment = KnowledgeGapTracker().add_comment(gap_id, user.name, body)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения комментария: {exc}") from exc
     if not comment:
@@ -298,7 +305,7 @@ def add_knowledge_gap_comment(gap_id: int, request: GapCommentRequest) -> dict:
     return comment
 
 
-@router.get("/knowledge-gap-groups")
+@admin_router.get("/knowledge-gap-groups")
 def list_knowledge_gap_groups(
     status: str | None = None, limit: int = 500, gap_id: int | None = None,
 ) -> list[dict]:
@@ -311,7 +318,7 @@ def list_knowledge_gap_groups(
         raise HTTPException(status_code=500, detail="Ошибка загрузки групп пробелов") from exc
 
 
-@router.get("/knowledge-gap-groups/{group_id}")
+@admin_router.get("/knowledge-gap-groups/{group_id}")
 def get_knowledge_gap_group(group_id: int) -> dict:
     try:
         result = GapMapService().get_group(group_id)
@@ -323,11 +330,12 @@ def get_knowledge_gap_group(group_id: int) -> dict:
     return result
 
 
-@router.post("/knowledge-gap-groups/{group_id}/confirm")
-def confirm_knowledge_gap_group(group_id: int, request: GapGroupConfirmRequest) -> dict:
+@admin_router.post("/knowledge-gap-groups/{group_id}/confirm")
+def confirm_knowledge_gap_group(group_id: int, request: GapGroupConfirmRequest,
+                                user: CurrentUser = Depends(require_kb_owner)) -> dict:
     try:
         return GapMapService().confirm_group(
-            group_id, member_ids=request.member_ids, author=request.author,
+            group_id, member_ids=request.member_ids, author=user.name,
         )
     except ValueError as exc:
         code = 404 if "не найдена" in str(exc).casefold() else 409
@@ -337,12 +345,13 @@ def confirm_knowledge_gap_group(group_id: int, request: GapGroupConfirmRequest) 
         raise HTTPException(status_code=500, detail="Ошибка подтверждения группы") from exc
 
 
-@router.post("/knowledge-gap-groups/{group_id}/resolve")
-def resolve_knowledge_gap_group(group_id: int, request: GapGroupResolveRequest) -> dict:
+@admin_router.post("/knowledge-gap-groups/{group_id}/resolve")
+def resolve_knowledge_gap_group(group_id: int, request: GapGroupResolveRequest,
+                                user: CurrentUser = Depends(require_kb_owner)) -> dict:
     try:
         return GapMapService().resolve_group(
             group_id, member_ids=request.member_ids, note=request.note,
-            author=request.author, idempotency_key=request.idempotency_key,
+            author=user.name, idempotency_key=request.idempotency_key,
         )
     except ValueError as exc:
         code = 404 if "не найдена" in str(exc).casefold() else 409
@@ -352,13 +361,14 @@ def resolve_knowledge_gap_group(group_id: int, request: GapGroupResolveRequest) 
         raise HTTPException(status_code=500, detail="Ошибка закрытия группы пробелов") from exc
 
 
-@router.post("/knowledge-gap-groups/{group_id}/members/{gap_id}/detach")
+@admin_router.post("/knowledge-gap-groups/{group_id}/members/{gap_id}/detach")
 def detach_knowledge_gap_group_member(
     group_id: int, gap_id: int, request: GapGroupDetachRequest,
+    user: CurrentUser = Depends(require_kb_owner),
 ) -> dict:
     try:
         return GapMapService().detach_member(
-            group_id, gap_id, reason=request.reason, author=request.author,
+            group_id, gap_id, reason=request.reason, author=user.name,
         )
     except ValueError as exc:
         code = 404 if "не найдена" in str(exc).casefold() else 409
@@ -368,7 +378,7 @@ def detach_knowledge_gap_group_member(
         raise HTTPException(status_code=500, detail="Ошибка отвязки элемента от группы") from exc
 
 
-@router.get("/quality-issues")
+@admin_router.get("/quality-issues")
 def list_quality_issues(
     status: str | None = None, issue_code: str | None = None, limit: int = 500,
 ) -> list[dict]:
@@ -381,11 +391,12 @@ def list_quality_issues(
         raise HTTPException(status_code=500, detail="Ошибка загрузки проблем качества") from exc
 
 
-@router.patch("/quality-issues/{issue_id}")
-def update_quality_issue(issue_id: str, request: QualityIssueStatusRequest) -> dict:
+@admin_router.patch("/quality-issues/{issue_id}")
+def update_quality_issue(issue_id: str, request: QualityIssueStatusRequest,
+                         user: CurrentUser = Depends(require_kb_owner)) -> dict:
     try:
         updated = GapMapService().update_quality_issue(
-            issue_id, request.status, note=request.note, author=request.author,
+            issue_id, request.status, note=request.note, author=user.name,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -9,11 +9,9 @@ import {
   Sparkles,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { AdminRole } from '../../types/knowledgeGaps';
-import { DEMO_ADMIN_USER, DEMO_DEVELOPER_USER } from '../../data/knowledgeGaps';
+import { useAuth, userInitials, userRoleLabel } from '../../auth/AuthContext';
 
 interface AdminSidebarProps {
-  role: AdminRole;
   gapCount: number;
   onNavigate: (label: string) => void;
   onLogout?: () => void;
@@ -42,8 +40,9 @@ const MAIN_NAV: NavItem[] = [
   },
 ];
 
-export function AdminSidebar({ role, gapCount, onNavigate, onLogout }: AdminSidebarProps) {
-  const user = role === 'developer' ? DEMO_DEVELOPER_USER : DEMO_ADMIN_USER;
+export function AdminSidebar({ gapCount, onNavigate, onLogout }: AdminSidebarProps) {
+  const { user } = useAuth();
+  if (!user) return null;
 
   return (
     <aside className="flex h-full w-[320px] shrink-0 flex-col border-r border-med-border bg-med-sidebar">
@@ -141,11 +140,11 @@ export function AdminSidebar({ role, gapCount, onNavigate, onLogout }: AdminSide
       <div className="mt-auto border-t border-med-border bg-med-sidebar/95 p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 border-med-border-strong bg-med-primary-light text-xs font-bold text-med-primary">
-            {user.avatar}
+            {userInitials(user.name)}
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-med-text-primary">{user.name}</div>
-            <div className="truncate text-xs text-med-text-muted">{user.roleShort}</div>
+            <div className="truncate text-xs text-med-text-muted">{userRoleLabel(user)}</div>
           </div>
           {onLogout && (
             <button

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+from getpass import getpass
+from http.cookiejar import CookieJar
 import json
 import platform
 import subprocess
@@ -20,10 +22,12 @@ DATASET = HERE / "golden_set_v1.json"
 REPORTS = HERE / "reports"
 
 
-def post_query(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+def post_query(url: str, payload: dict[str, Any], timeout: float,
+               opener: urllib.request.OpenerDirector | None = None,
+               origin: str = "http://127.0.0.1:5173") -> dict[str, Any]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json","Accept":"application/json"}, method="POST")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    request = urllib.request.Request(url, data=data, headers={"Content-Type":"application/json","Accept":"application/json", "Origin": origin}, method="POST")
+    with (opener.open if opener else urllib.request.urlopen)(request, timeout=timeout) as response:
         body = response.read().decode("utf-8")
         parsed = json.loads(body)
         if not isinstance(parsed, dict): raise ValueError("API вернул JSON не в виде объекта")
@@ -91,6 +95,8 @@ def validate_dataset(dataset: dict[str, Any]) -> list[dict[str, Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ручной запуск оценки MedTrust Golden Set v1")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Адрес MedTrust API")
+    parser.add_argument("--login", help="Логин MedTrust; пароль запрашивается скрыто")
+    parser.add_argument("--origin", default="http://127.0.0.1:5173", help="Доверенный Origin из CORS_ORIGINS")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=120.0, help="Таймаут одного запроса, секунд")
     parser.add_argument("--limit", type=int, default=0, help="Ограничить число кейсов для пробного запуска")
@@ -110,6 +116,13 @@ def main() -> int:
         if unknown: parser.error("Неизвестные ID: " + ", ".join(sorted(unknown)))
     if args.limit < 0: parser.error("--limit не может быть отрицательным")
     if args.limit: cases = cases[:args.limit]
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+    login = args.login or input("Логин MedTrust: ").strip()
+    try:
+        post_query(args.base_url.rstrip("/") + "/api/v1/auth/login",
+                   {"login": login, "password": getpass("Пароль MedTrust: ")}, args.timeout, opener, args.origin)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+        parser.exit(1, f"Не удалось войти в MedTrust: {exc}\n")
     endpoint = args.base_url.rstrip("/") + "/api/v1/query"
     print(f"Golden Set: {len(cases)} кейсов; endpoint: {endpoint}")
     print("Каждый кейс отправляется в отдельном запросе с conversation_id=null.", flush=True)
@@ -117,7 +130,7 @@ def main() -> int:
     for index, case in enumerate(cases, 1):
         payload={"question":case["question"],"patient":None,"top_k":args.top_k,"conversation_id":None}
         t0=time.monotonic(); response=None; error=None
-        try: response=post_query(endpoint,payload,args.timeout)
+        try: response=post_query(endpoint,payload,args.timeout,opener,args.origin)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc: error=str(exc)
         elapsed=round(time.monotonic()-t0,2)
         result=evaluate_case(case,response,error,retrieval_k=args.top_k)

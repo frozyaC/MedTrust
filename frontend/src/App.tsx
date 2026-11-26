@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Header } from './components/Header';
-import { LoginPage } from './components/LoginPage';
+import { useAuth } from './auth/AuthContext';
 import { Sidebar } from './components/Sidebar';
 import { SearchBar } from './components/SearchBar';
 import { AnswerBlock } from './components/AnswerBlock';
@@ -35,7 +35,7 @@ import {
   ScreenState,
   Source,
 } from './types';
-import { QueryApiError, askAndBuildItem, askWebSearch, cancelGap, loadConversationItems, sendFeedback } from './api/query';
+import { QueryApiError, askAndBuildItem, askWebSearch, loadConversationItems, sendFeedback } from './api/query';
 import {
   AlertOctagon,
   FileQuestion,
@@ -64,8 +64,6 @@ type ConversationIds = Record<string, string>;
 
 const UNASSIGNED_THREAD = 'unassigned';
 const CONVERSATION_IDS_STORAGE_KEY = 'medtrust.conversationIds';
-
-const AUTH_STORAGE_KEY = 'medtrust.auth';
 
 function readStoredConversationIds(): ConversationIds {
   try {
@@ -192,12 +190,9 @@ const historyThread = (): ConversationItem[] => [
 ];
 
 export default function App() {
+  const { logout } = useAuth();
   const [hotkeys, setHotkeys] = useState<HotkeysConfig>(loadHotkeys);
   const [isHotkeysEditorOpen, setIsHotkeysEditorOpen] = useState(false);
-
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
-    () => window.localStorage.getItem(AUTH_STORAGE_KEY) === 'true',
-  );
 
   const [patients] = useState<Patient[]>(MOCK_PATIENTS);
   const [popularQuestions, setPopularQuestions] = useState<PopularQuestionsConfig>(
@@ -362,19 +357,12 @@ export default function App() {
     window.setTimeout(() => setSidebarHighlighted(false), 1600);
   };
 
-  const handleLogin = (_login: string, _password: string) => {
-    window.localStorage.setItem(AUTH_STORAGE_KEY, 'true');
-    setIsAuthenticated(true);
-    setToastMessage('Добро пожаловать в MedTrust!');
-  };
-
-  const handleLogout = () => {
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
-    setIsAuthenticated(false);
-    setThreads({});
-    setConversationIds({});
-    setSelectedPatient(null);
-    setScreenState('empty');
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      setToastMessage('Не удалось выйти из аккаунта. Повторите попытку.');
+    }
   };
 
   /**
@@ -513,41 +501,7 @@ export default function App() {
     }
   };
 
-  /**
-   * Отмена автоматически зафиксированного пробела.
-   */
-  const handleCancelGap = async (gapId: string | number): Promise<void> => {
-    try {
-      await cancelGap(gapId, 'Отменено пользователем из чата');
-    } catch (error) {
-      const detail = error instanceof QueryApiError ? error.message : 'Неизвестная ошибка';
-      throw new Error(detail);
-    }
 
-    const targetId = String(gapId);
-    setThreads((current) => {
-      const next: Threads = {};
-      for (const [key, items] of Object.entries(current)) {
-        next[key] = items.map((item) => {
-          if (!item.answer?.gap || String(item.answer.gap.id) !== targetId) return item;
-          return {
-            ...item,
-            answer: {
-              ...item.answer,
-              gap: { ...item.answer.gap, cancelled: true },
-            },
-          };
-        });
-      }
-      return next;
-    });
-
-    setToastMessage('Пробел отменён. Запись осталась в истории админки.');
-  };
-
-  /**
-   * Ручной веб-поиск по вопросу, на который не нашлось ответа в Wiki.
-   */
   const handleWebSearch = async (itemId: string, question: string): Promise<void> => {
     // Локально помечаем, что идёт загрузка
     setCurrentThread((items) =>
@@ -883,10 +837,6 @@ export default function App() {
     [popularQuestions, questionPresets, hotkeys],
   );
 
-  if (!isAuthenticated) {
-    return <LoginPage onLogin={handleLogin} />;
-  }
-
   return (
     <div
       className="h-screen flex flex-col bg-[#EFF6FF] text-[#0F172A] font-sans antialiased overflow-hidden"
@@ -1022,7 +972,6 @@ export default function App() {
                           onViewConflictSources={() =>
                             handleCitationClick(item.id, 'W1')
                           }
-                          onCancelGap={handleCancelGap}
                         />
                         {item.answer.sources.length > 0 && (
                           <SourceGroup

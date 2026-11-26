@@ -1,9 +1,9 @@
+import { useAuth } from '../auth/AuthContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CalendarDays, ChevronRight, RefreshCw } from 'lucide-react';
 import { AdminHeader } from '../components/admin/AdminHeader';
 import { AdminSidebar } from '../components/admin/AdminSidebar';
 import { ConfirmResolveModal } from '../components/admin/ConfirmResolveModal';
-import { DeveloperGapsView } from '../components/admin/DeveloperGapsView';
 import { DismissGapModal } from '../components/admin/DismissGapModal';
 import { EmptyState } from '../components/admin/EmptyState';
 import { GapDetailPanel } from '../components/admin/GapDetailPanel';
@@ -14,7 +14,6 @@ import type { RequestedGapStatus } from '../components/admin/GapTable';
 import { MetricCard } from '../components/admin/MetricCard';
 import { Toast } from '../components/Toast';
 import {
-  AdminRole,
   DismissReason,
   GapFilters,
   GapPeriod,
@@ -27,7 +26,6 @@ import {
 } from '../types/knowledgeGaps';
 import {
   DEFAULT_FILTERS,
-  DEMO_ADMIN_USER,
   DISMISS_REASON_OPTIONS,
   PERIOD_OPTIONS,
   STATUS_OPTIONS,
@@ -200,34 +198,14 @@ function LoadError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-function DeveloperLoading() {
-  return (
-    <section
-      className="rounded-xl border border-med-border bg-med-surface p-6 shadow-med-card"
-      aria-busy="true"
-      aria-label="Загрузка технического списка"
-    >
-      <div className="h-6 w-56 animate-pulse rounded bg-med-bg" />
-      <div className="mt-2 h-3 w-80 animate-pulse rounded bg-med-bg" />
-      <div className="mt-5 space-y-3">
-        {Array.from({ length: 6 }).map((_, index) => (
-          <div key={index} className="h-12 animate-pulse rounded-lg bg-med-bg" />
-        ))}
-      </div>
-    </section>
-  );
-}
-
 export function KnowledgeGapsPage() {
+  const { user, logout } = useAuth();
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const initialDebugState = params.get('state');
-  const initialRole: AdminRole =
-    params.get('role') === 'developer' ? 'developer' : 'kb_owner';
   const initialPeriod = parsePeriod(params.get('period'));
   const initialSort = parseSort(params.get('sort'));
   const initialStatuses = parseStatusFilter(params.get('status'));
 
-  const [role, setRole] = useState<AdminRole>(initialRole);
   const [view, setView] = useState<'gaps' | 'groups'>('gaps');
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [gaps, setGaps] = useState<KnowledgeGap[]>([]);
@@ -246,7 +224,7 @@ export function KnowledgeGapsPage() {
   const [forceEmpty, setForceEmpty] = useState(initialDebugState === 'empty');
   const [pageState, setPageState] = useState<PageState>('loading');
   const [selectedGapId, setSelectedGapId] = useState<string | null>(() => {
-    if (initialRole === 'developer' || params.get('panel') === 'closed') return null;
+    if (params.get('panel') === 'closed') return null;
     return params.get('gap');
   });
   const [resolveTarget, setResolveTarget] = useState<{
@@ -405,7 +383,7 @@ export function KnowledgeGapsPage() {
     const run = async () => {
       const savedComment = await updateGapStatus(String(gap.id), status, {
         ...options,
-        author: DEMO_ADMIN_USER.name,
+        author: user!.name,
       });
 
       const nowIso = new Date().toISOString();
@@ -418,7 +396,7 @@ export function KnowledgeGapsPage() {
             status,
             updatedAt: nowIso,
             ...(isClosing
-              ? { resolvedAt: nowIso, resolvedBy: DEMO_ADMIN_USER.name }
+              ? { resolvedAt: nowIso, resolvedBy: user!.name }
               : {}),
             ...(savedComment ? { comments: [...item.comments, savedComment] } : {}),
           };
@@ -455,7 +433,7 @@ export function KnowledgeGapsPage() {
 
   const commitComment = async (gap: KnowledgeGap, comment: string) => {
     const run = async () => {
-      const saved = await addGapComment(String(gap.id), comment, DEMO_ADMIN_USER.name);
+      const saved = await addGapComment(String(gap.id), comment, user!.name);
 
       setGaps((current) =>
         current.map((item) =>
@@ -514,7 +492,7 @@ export function KnowledgeGapsPage() {
 
     if (group && members.length > 0) {
       const memberIds = [...new Set([Number(gap.id), ...members.map((member) => member.gapId)])].sort((a, b) => a - b);
-      const body = { member_ids: memberIds, note, author: DEMO_ADMIN_USER.name };
+      const body = { member_ids: memberIds, note, author: user!.name };
       const signature = JSON.stringify({ groupId: group.id, ...body });
       if (pendingGroupResolve.current?.signature !== signature) {
         const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -524,7 +502,7 @@ export function KnowledgeGapsPage() {
       try {
         const currentGroup = await fetchGapGroup(group.id);
         if (currentGroup.status === 'candidate') {
-          await confirmGapGroup(group.id, { member_ids: memberIds, author: DEMO_ADMIN_USER.name });
+          await confirmGapGroup(group.id, { member_ids: memberIds, author: user!.name });
         }
         const result = await resolveGapGroup(group.id, request);
         setToast({
@@ -560,16 +538,6 @@ export function KnowledgeGapsPage() {
     );
   };
 
-  const handleRoleChange = (nextRole: AdminRole) => {
-    setRole(nextRole);
-    setView('gaps');
-    setSelectedGroupId(null);
-    setSelectedGapId(null);
-    setResolveTarget(null);
-    setDismissTarget(null);
-    setToast(null);
-  };
-
   const handleNavigate = (label: string) => {
     setToast({
       id: Date.now(),
@@ -578,8 +546,12 @@ export function KnowledgeGapsPage() {
     });
   };
 
-  const handleLogout = () => {
-    window.location.assign('/');
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      setToast({ id: Date.now(), type: 'error', message: 'Не удалось выйти из аккаунта. Повторите попытку.' });
+    }
   };
 
   const copyToast = () => {
@@ -608,11 +580,10 @@ export function KnowledgeGapsPage() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-med-bg font-sans text-med-text-primary antialiased">
-      <AdminHeader role={role} onRoleChange={handleRoleChange} onLogout={handleLogout} />
+      <AdminHeader onLogout={handleLogout} />
 
       <div className="flex min-h-0 flex-1">
         <AdminSidebar
-          role={role}
           gapCount={gaps.filter((gap) => gap.status === 'open' || gap.status === 'in_review').length}
           onNavigate={handleNavigate}
           onLogout={handleLogout}
@@ -637,21 +608,14 @@ export function KnowledgeGapsPage() {
                   <h1 className="text-2xl font-semibold leading-8 tracking-tight text-med-text-primary">
                     Карта пробелов в базе знаний
                   </h1>
-                  {role === 'developer' && (
-                    <span className="rounded-full border border-med-border bg-med-primary-light/60 px-2.5 py-1 text-xs font-medium text-med-primary-hover">
-                      Технический вид
-                    </span>
-                  )}
                 </div>
 
                 <p className="mt-1 max-w-[760px] text-sm leading-5 text-med-text-secondary">
-                  {role === 'developer'
-                    ? 'Обезличенный вид для разработчиков: query_id, тексты вопросов, причина недостаточности и статус. Персональные данные не отображаются.'
-                    : 'Вопросы, на которые не нашлось достаточного ответа в корпоративной БЗ. Автоматические и подтверждённые пробелы.'}
+                  Вопросы, на которые не нашлось достаточного ответа в корпоративной БЗ. Автоматические и подтверждённые пробелы.
                 </p>
               </div>
 
-              {(role === 'developer' || view === 'gaps') && <PeriodSelector
+              {view === 'gaps' && <PeriodSelector
                 period={period}
                 onPeriodChange={(next) => {
                   setPeriod(next);
@@ -664,16 +628,16 @@ export function KnowledgeGapsPage() {
               />}
             </div>
 
-            {role === 'kb_owner' && <div className="flex gap-2" role="group" aria-label="Представление карты пробелов">
+            <div className="flex gap-2" role="group" aria-label="Представление карты пробелов">
               {(['gaps', 'groups'] as const).map((value) => <button key={value} type="button" aria-pressed={view === value}
                 className={`rounded-lg border px-4 py-2 text-sm font-medium ${view === value ? 'border-med-primary bg-med-primary-light text-med-primary' : 'border-med-border bg-med-surface'}`}
                 onClick={() => { setView(value); setSelectedGapId(null); setSelectedGroupId(null); }}>
                 {value === 'gaps' ? 'Пробелы' : 'Группы'}
               </button>)}
-            </div>}
+            </div>
 
-            {role === 'kb_owner' && view === 'groups' ? <KnowledgeGapGroups
-              groupId={selectedGroupId} author={DEMO_ADMIN_USER.name} onSelectGroup={setSelectedGroupId}
+            {view === 'groups' ? <KnowledgeGapGroups
+              groupId={selectedGroupId} author={user!.name} onSelectGroup={setSelectedGroupId}
               onOpenGap={(gapId) => void openGroupGap(gapId)} onChanged={refreshAfterGroupChange}
             /> : pageState === 'error' ? (
               <LoadError
@@ -683,62 +647,52 @@ export function KnowledgeGapsPage() {
               />
             ) : (
               <>
-                {role === 'kb_owner' && (
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-                    <MetricCard
-                      label="Всего пробелов"
-                      value={metrics.total}
-                      hint={periodLabelText}
-                      loading={pageState === 'loading'}
-                    />
-                    <MetricCard
-                      label="Открыто"
-                      value={metrics.open}
-                      hint="ожидают решения"
-                      loading={pageState === 'loading'}
-                    />
-                    <MetricCard
-                      label="В работе"
-                      value={metrics.inReview}
-                      hint="на проверке"
-                      loading={pageState === 'loading'}
-                    />
-                    <MetricCard
-                      label="Закрыто"
-                      value={metrics.resolved}
-                      hint={periodLabelText}
-                      loading={pageState === 'loading'}
-                    />
-                    <MetricCard
-                      label="Среднее время закрытия"
-                      value={metrics.averageLabel}
-                      hint="от открытия до закрытия"
-                      loading={pageState === 'loading'}
-                    />
-                  </div>
-                )}
-
-                {role === 'kb_owner' && (
-                  <GapFilterBar
-                    filters={filters}
-                    onChange={(next) => {
-                      setFilters((current) => ({ ...current, ...next }));
-                      setForceEmpty(false);
-                    }}
-                    sort={sort}
-                    onSortChange={setSort}
-                    onReset={() => resetFilters(false)}
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+                  <MetricCard
+                    label="Всего пробелов"
+                    value={metrics.total}
+                    hint={periodLabelText}
+                    loading={pageState === 'loading'}
                   />
-                )}
+                  <MetricCard
+                    label="Открыто"
+                    value={metrics.open}
+                    hint="ожидают решения"
+                    loading={pageState === 'loading'}
+                  />
+                  <MetricCard
+                    label="В работе"
+                    value={metrics.inReview}
+                    hint="на проверке"
+                    loading={pageState === 'loading'}
+                  />
+                  <MetricCard
+                    label="Закрыто"
+                    value={metrics.resolved}
+                    hint={periodLabelText}
+                    loading={pageState === 'loading'}
+                  />
+                  <MetricCard
+                    label="Среднее время закрытия"
+                    value={metrics.averageLabel}
+                    hint="от открытия до закрытия"
+                    loading={pageState === 'loading'}
+                  />
+                </div>
+
+                <GapFilterBar
+                  filters={filters}
+                  onChange={(next) => {
+                    setFilters((current) => ({ ...current, ...next }));
+                    setForceEmpty(false);
+                  }}
+                  sort={sort}
+                  onSortChange={setSort}
+                  onReset={() => resetFilters(false)}
+                />
 
                 {pageState === 'loading' ? (
-                  role === 'developer' ? (
-                    <DeveloperLoading />
-                  ) : (
-                    <GapTableSkeleton />
-                  )
-                ) : role === 'developer' ? (
-                  <DeveloperGapsView gaps={periodGaps} periodLabel={periodLabelText} />
+                  <GapTableSkeleton />
                 ) : forceEmpty || visibleGaps.length === 0 ? (
                   <EmptyState onReset={() => resetFilters(true)} />
                 ) : (
@@ -757,7 +711,7 @@ export function KnowledgeGapsPage() {
         </main>
       </div>
 
-      {role === 'kb_owner' && selectedGap && (
+      {selectedGap && (
         <GapDetailPanel
           gap={selectedGap}
           onClose={() => setSelectedGapId(null)}

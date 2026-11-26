@@ -1,11 +1,9 @@
+import { apiBaseUrl, apiFetch } from './client';
 import type {
   GapComment, GapStatus, KnowledgeGap, KnowledgeGapGroup, GapGroupStatus,
   GapGroupConfirmRequest, GapGroupDetachRequest, GapGroupResolveRequest, GapGroupResolveResult,
 } from '../types/knowledgeGaps';
 
-function apiBaseUrl(): string {
-  return import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
-}
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -17,7 +15,7 @@ export class GapApiError extends Error {
 }
 
 async function groupRequest<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}/api/v1/knowledge-gap-groups${path}`, {
+  const response = await apiFetch(`${apiBaseUrl()}/api/v1/knowledge-gap-groups${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers: JSON_HEADERS,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -69,7 +67,7 @@ export function resolveGapGroup(groupId: number, request: GapGroupResolveRequest
  */
 export async function fetchKnowledgeGaps(gapId?: number): Promise<KnowledgeGap[]> {
   const query = gapId === undefined ? '' : `?gap_id=${gapId}`;
-  const response = await fetch(`${apiBaseUrl()}/api/v1/knowledge-gaps${query}`, {
+  const response = await apiFetch(`${apiBaseUrl()}/api/v1/knowledge-gaps${query}`, {
     headers: JSON_HEADERS,
   });
 
@@ -89,7 +87,7 @@ export async function updateGapStatus(
   status: GapStatus,
   options?: { note?: string; author?: string },
 ): Promise<GapComment | undefined> {
-  const response = await fetch(`${apiBaseUrl()}/api/v1/knowledge-gaps/${gapId}`, {
+  const response = await apiFetch(`${apiBaseUrl()}/api/v1/knowledge-gaps/${gapId}`, {
     method: 'PATCH',
     headers: JSON_HEADERS,
     body: JSON.stringify({ status, note: options?.note, author: options?.author }),
@@ -109,7 +107,7 @@ export async function addGapComment(
   body: string,
   author: string,
 ): Promise<GapComment> {
-  const response = await fetch(`${apiBaseUrl()}/api/v1/knowledge-gaps/${gapId}/comments`, {
+  const response = await apiFetch(`${apiBaseUrl()}/api/v1/knowledge-gaps/${gapId}/comments`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ body, author }),

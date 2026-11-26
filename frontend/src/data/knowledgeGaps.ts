@@ -87,17 +87,3 @@ export const DEFAULT_FILTERS: GapFilters = {
   sources: SOURCE_OPTIONS.map((option) => option.value),
   reasons: REASON_OPTIONS.map((option) => option.value),
 };
-
-export const DEMO_ADMIN_USER = {
-  name: 'Смирнова Е.В.',
-  role: 'Заведующий регистратурой',
-  roleShort: 'Владелец БЗ',
-  avatar: 'СЕ',
-};
-
-export const DEMO_DEVELOPER_USER = {
-  name: 'Техническая команда',
-  role: 'Разработчик',
-  roleShort: 'Технический вид',
-  avatar: 'ТК',
-};
