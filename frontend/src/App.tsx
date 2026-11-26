@@ -17,8 +17,17 @@ import { AnswerSkeleton } from './components/AnswerSkeleton';
 import { MessageThread } from './components/MessageThread';
 import { WebAnswerBlock } from './components/WebAnswerBlock';
 import { SourceModal } from './components/SourceModal';
+import { HotkeysEditor } from './components/HotkeysEditor';
 import { MOCK_PATIENTS, MOCK_ANSWERS } from './data/mockData';
 import { FeedbackReasonCode, getFeedbackReason } from './data/feedbackReasons';
+import {
+  formatHotkey,
+  HOTKEY_IDS,
+  loadHotkeys,
+  matchesHotkey,
+  saveHotkeys,
+  HotkeysConfig,
+} from './data/hotkeys';
 import {
   AnswerData,
   ConversationItem,
@@ -183,6 +192,9 @@ const historyThread = (): ConversationItem[] => [
 ];
 
 export default function App() {
+  const [hotkeys, setHotkeys] = useState<HotkeysConfig>(loadHotkeys);
+  const [isHotkeysEditorOpen, setIsHotkeysEditorOpen] = useState(false);
+
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
     () => window.localStorage.getItem(AUTH_STORAGE_KEY) === 'true',
   );
@@ -638,21 +650,12 @@ export default function App() {
   };
 
 
-  // Горячие клавиши Alt+1–9, Alt+Z и Alt+X
+  // Настраиваемые горячие клавиши
   useEffect(() => {
     const handleKeyboardShortcuts = (event: KeyboardEvent) => {
-      if (
-        !event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey
-      ) {
-        return;
-      }
-
       const target = event.target;
 
-      // Не перехватываем клавиши, когда открыто модальное окно
+      // Не перехватываем клавиши внутри модальных окон
       if (
         target instanceof HTMLElement &&
         target.closest('[role="dialog"]')
@@ -660,15 +663,13 @@ export default function App() {
         return;
       }
 
-      // Alt+Z — фокус на поиск пациента
-      if (event.code === 'KeyZ') {
+      if (matchesHotkey(event, hotkeys.focusPatient)) {
         event.preventDefault();
         sidebarSearchRef.current?.focus();
         return;
       }
 
-      // Alt+X — фокус на поле вопроса или уточнения
-      if (event.code === 'KeyX') {
+      if (matchesHotkey(event, hotkeys.focusQuestion)) {
         event.preventDefault();
 
         if (hasThread) {
@@ -680,34 +681,34 @@ export default function App() {
         return;
       }
 
-      // Alt+Q — новый диалог со сбросом пациента
-      if (event.code === 'KeyQ') {
+      if (matchesHotkey(event, hotkeys.newConversation)) {
         event.preventDefault();
         clearConversation();
         return;
       }
 
-      // Alt+R — сброс выбранного пациента
-      if (event.code === 'KeyR') {
+      if (matchesHotkey(event, hotkeys.resetPatient)) {
         event.preventDefault();
         handleChangePatient();
         return;
       }
 
-      // Alt+1–9 — вставка обычного вопроса или уточнения
-      const match = event.code.match(/^(?:Digit|Numpad)([1-9])$/);
-      if (!match) return;
+      // Шаблоны 1–9
+      const templateId = HOTKEY_IDS.find(
+        (id) =>
+          id.startsWith('template') &&
+          matchesHotkey(event, hotkeys[id]),
+      );
 
-      const shortcut = match[1];
-      const index = Number(shortcut) - 1;
+      if (!templateId) return;
+
+      const index = Number(templateId.replace('template', '')) - 1;
 
       if (hasThread) {
-        // Если диалог открыт — берём уточняющие вопросы
         const preset = suggestions.suggestions[index];
         if (!preset) return;
 
         event.preventDefault();
-
         setSuggestion('');
         window.setTimeout(() => {
           setSuggestion(preset.label);
@@ -717,15 +718,13 @@ export default function App() {
         return;
       }
 
-      // Если диалога нет — берём обычные вопросы
       const preset =
-        questionPresets.find((item) => item.shortcut === shortcut) ??
+        questionPresets.find((item) => item.shortcut === String(index + 1)) ??
         questionPresets[index];
 
       if (!preset) return;
 
       event.preventDefault();
-
       setSuggestion('');
       window.setTimeout(() => setSuggestion(preset.value), 0);
     };
@@ -736,6 +735,7 @@ export default function App() {
       window.removeEventListener('keydown', handleKeyboardShortcuts);
     };
   }, [
+    hotkeys,
     hasThread,
     questionPresets,
     suggestions,
@@ -844,7 +844,7 @@ export default function App() {
                     }}
                     title={
                       shortcutIndex < 9
-                        ? `Вставить шаблон (Alt+${shortcutIndex + 1})`
+                        ? `Вставить шаблон (${formatHotkey(hotkeys[`template${shortcutIndex + 1}` as keyof HotkeysConfig])})`
                         : 'Вставить шаблон'
                     }
                     className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left flex items-center justify-between gap-2"
@@ -853,7 +853,7 @@ export default function App() {
 
                     {shortcutIndex >= 0 && shortcutIndex < 9 && (
                       <kbd className="shrink-0 px-1.5 py-0.5 rounded bg-white border border-[#BFDBFE] text-[10px] text-[#64748B]">
-                        Alt+{shortcutIndex + 1}
+                        {formatHotkey(hotkeys[`template${shortcutIndex + 1}` as keyof HotkeysConfig])}
                       </kbd>
                     )}
                   </button>
@@ -869,7 +869,7 @@ export default function App() {
         ))}
       </div>
     ),
-    [popularQuestions, questionPresets],
+    [popularQuestions, questionPresets, hotkeys],
   );
 
   if (!isAuthenticated) {
@@ -878,7 +878,10 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-[#EFF6FF] text-[#0F172A] font-sans antialiased overflow-hidden">
-      <Header onLogout={handleLogout} />
+      <Header
+        onLogout={handleLogout}
+        onOpenHotkeys={() => setIsHotkeysEditorOpen(true)}
+      />
       {/* <StateSelector currentState={screenState} onSelectState={selectDemoState} /> */}
 
 
@@ -888,28 +891,24 @@ export default function App() {
             Горячие клавиши:
           </span>
 
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+Z</kbd>
-            Поиск пациента
-          </span>
+          {[
+            ['focusPatient', 'Поиск пациента'],
+            ['focusQuestion', 'Поле вопроса'],
+            ['newConversation', 'Новый диалог'],
+            ['resetPatient', 'Сброс пациента'],
+          ].map(([id, label]) => (
+            <span key={id} className="flex items-center gap-1.5">
+              <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">
+                {formatHotkey(hotkeys[id as keyof HotkeysConfig])}
+              </kbd>
+              {label}
+            </span>
+          ))}
 
           <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+X</kbd>
-            Поле вопроса
-          </span>
-
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+Q</kbd>
-            Новый диалог
-          </span>
-
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+R</kbd>
-            Сброс пациента
-          </span>
-
-          <span className="flex items-center gap-1.5">
-            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">Alt+1–9</kbd>
+            <kbd className="rounded border border-[#BFDBFE] bg-[#EFF6FF] px-1.5 py-0.5 font-semibold text-[#2563EB]">
+              {formatHotkey(hotkeys.template1)} – {formatHotkey(hotkeys.template9)}
+            </kbd>
             Шаблоны вопросов / уточнений
           </span>
         </div>
@@ -1188,6 +1187,19 @@ export default function App() {
             setToastMessage('Уточняющие вопросы обновлены.');
           }}
           onClose={() => setIsSuggestionEditorOpen(false)}
+        />
+      )}
+
+      {isHotkeysEditorOpen && (
+        <HotkeysEditor
+          config={hotkeys}
+          onSave={(next) => {
+            setHotkeys(next);
+            saveHotkeys(next);
+            setIsHotkeysEditorOpen(false);
+            setToastMessage('Горячие клавиши сохранены.');
+          }}
+          onClose={() => setIsHotkeysEditorOpen(false)}
         />
       )}
     </div>

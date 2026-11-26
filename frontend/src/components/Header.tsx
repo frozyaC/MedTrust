@@ -1,11 +1,15 @@
 import React from 'react';
-import { HelpCircle, BookOpen, LogOut, Map } from 'lucide-react';
+import { HelpCircle, BookOpen, LogOut, Map, Keyboard } from 'lucide-react';
 
 interface HeaderProps {
   onLogout?: () => void;
+  onOpenHotkeys?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onLogout }) => {
+export const Header: React.FC<HeaderProps> = ({
+  onLogout,
+  onOpenHotkeys,
+}) => {
   return (
     <header className="h-[64px] bg-white border-b border-[#BFDBFE] px-6 flex items-center justify-between shrink-0 select-none z-10 shadow-xs">
       {/* Left section: Logo & Clinic Name & Status Chips */}
@@ -55,6 +59,16 @@ export const Header: React.FC<HeaderProps> = ({ onLogout }) => {
         >
           <Map className="w-4 h-4" />
           Карта пробелов
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenHotkeys}
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[#2563EB] hover:bg-[#EFF6FF] transition-colors"
+          title="Настроить горячие клавиши"
+        >
+          <Keyboard className="w-4 h-4" />
+          Горячие клавиши
         </button>
 
         <div className="text-right">
