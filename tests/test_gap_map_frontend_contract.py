@@ -99,8 +99,17 @@ def test_list_groups_filters_by_gap_id_and_triggers_backfill(monkeypatch):
     assert result == []
     assert backfill_calls == [True]
     sql, params = conn.calls[0]
-    assert "gap_filter.gap_id=%s::bigint" in sql
+    assert "gap_filter.gap_id = %s::bigint" in sql
     assert params == (None, None, 18, 18, 500)
+
+
+def test_list_gaps_can_load_a_specific_member_outside_the_recent_list(monkeypatch):
+    conn = FakeConnection(all_rows=[])
+    _patch_db(monkeypatch, conn)
+    assert GapMapService().list_gaps(gap_id=5001) == []
+    sql, params = conn.calls[0]
+    assert "WHERE g.id=%s" in sql
+    assert params == [5001, 500]
 
 
 def test_detach_legacy_cluster_suggestion_is_audited_and_cleared(monkeypatch):
@@ -126,9 +135,10 @@ def test_detach_legacy_cluster_suggestion_is_audited_and_cleared(monkeypatch):
     assert conn.commits == 1
 
 
-def test_list_gaps_exposes_frontend_cluster_metadata(monkeypatch):
+@pytest.mark.parametrize("with_feedback", [False, True])
+def test_list_gaps_exposes_frontend_cluster_metadata(monkeypatch, with_feedback):
     now = datetime(2026, 11, 12, tzinfo=timezone.utc)
-    row = [None] * 30
+    row = [None] * 34
     row[0] = 18
     row[1] = "Запрос о подготовке к исследованию"
     row[2] = "запрос о подготовке к исследованию"
@@ -147,6 +157,11 @@ def test_list_gaps_exposes_frontend_cluster_metadata(monkeypatch):
     row[27] = "review_candidate"
     row[28] = 0.91
     row[29] = 3
+    if with_feedback:
+        row[30] = "feedback-id"
+        row[31] = "dislike"
+        row[32] = " Missing preparation details "
+        row[33] = [{"id": "comment-id", "body": "Needs review"}]
     conn = FakeConnection(all_rows=[tuple(row)])
     _patch_db(monkeypatch, conn)
 
@@ -156,3 +171,10 @@ def test_list_gaps_exposes_frontend_cluster_metadata(monkeypatch):
     assert result[0]["clusterId"] == row[25]
     assert result[0]["suggestedClusterId"] == row[26]
     assert result[0]["clusterMatchType"] == "review_candidate"
+    assert result[0]["similarityScore"] == 0.91
+    assert result[0]["feedback"] == (
+        {"id": "feedback-id", "rating": "dislike", "comment": "Missing preparation details"}
+        if with_feedback else None
+    )
+    assert result[0]["comments"] == (row[33] if with_feedback else [])
+    assert result[0]["webSearchUsed"] is False

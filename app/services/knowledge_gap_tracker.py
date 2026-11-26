@@ -1,4 +1,4 @@
-"""Persist MedTrust knowledge-gap topics without auto-merging semantic matches.
+"""Persist user-reported knowledge-gap topics without auto-merging semantic matches.
 
 Exact duplicate questions continue to use a SHA-256 fingerprint. Distinct
 questions always retain separate gap and cluster identities; vector similarity
@@ -115,6 +115,25 @@ _ENSURE_SQL = (
     "ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'automatic'",
     "ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     "ALTER TABLE knowledge_gaps ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ NULL",
+    """
+    CREATE TABLE IF NOT EXISTS knowledge_gap_comments (
+        id BIGSERIAL PRIMARY KEY,
+        gap_id BIGINT NOT NULL REFERENCES knowledge_gaps(id) ON DELETE CASCADE,
+        author TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS knowledge_gap_comments_gap_idx ON knowledge_gap_comments (gap_id, created_at)",
+    """
+    CREATE TABLE IF NOT EXISTS query_feedback (
+        id UUID PRIMARY KEY,
+        query_id UUID NOT NULL,
+        rating TEXT NOT NULL CHECK (rating IN ('positive', 'negative')),
+        comment TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
 )
 
 GAP_STATUSES = {"open", "in_review", "resolved", "dismissed"}
@@ -172,6 +191,43 @@ def _reason_code(reason: str) -> str:
     code = (reason or "").removeprefix("user_feedback:")
     return code if code in GAP_REASON_CODES else "no_knowledge_base_answer"
 
+# save_feedback хранит комментарий как "[reason_code] текст"
+_FEEDBACK_COMMENT_RE = re.compile(r"^\[([a-z_]+)\]\s*(.*)$", re.DOTALL)
+
+
+def _feedback_view(feedback_id: Any, rating: str, raw_comment: str | None) -> dict[str, Any]:
+    comment = raw_comment or ""
+    reason_code = None
+    match = _FEEDBACK_COMMENT_RE.match(comment)
+    if match:
+        reason_code, comment = match.group(1), match.group(2)
+    return {
+        "id": str(feedback_id),
+        "rating": rating,
+        "comment": comment.strip(),
+        **({"reasonCode": reason_code} if reason_code in GAP_REASON_CODES else {}),
+    }
+
+
+def _comment_view(row: tuple) -> dict[str, Any]:
+    return {
+        "id": str(row[0]),
+        "author": row[1],
+        "body": row[2],
+        "createdAt": row[3].isoformat(),
+    }
+
+
+def _insert_comment(cur: Any, gap_id: int, author: str, body: str) -> dict[str, Any]:
+    cur.execute(
+        """
+        INSERT INTO knowledge_gap_comments (gap_id, author, body)
+        VALUES (%s, %s, %s)
+        RETURNING id, author, body, created_at
+        """,
+        (gap_id, author[:200], body[:2000]),
+    )
+    return _comment_view(cur.fetchone())
 
 class KnowledgeGapTracker:
     """Store exact gaps and group semantically similar questions."""
@@ -360,6 +416,10 @@ class KnowledgeGapTracker:
         wiki_candidates: list[dict[str, Any]] | None = None,
         source: str = "automatic",
     ) -> bool:
+        # Keep the existing RAG hook compatible, but only explicit user feedback
+        # may create/update gaps. Automatic calls do not touch DB or embeddings.
+        if source != "user_feedback":
+            return False
         safe_query = _privacy_safe_query(query)
         normalized = _normalise(safe_query)
         if not normalized or not self.database_url:
@@ -660,10 +720,15 @@ class KnowledgeGapTracker:
                     })
         return clusters
 
-    def update_status(self, gap_id: int, status: str) -> bool:
+    def update_status(
+        self, gap_id: int, status: str, note: str | None = None, author: str | None = None
+    ) -> dict[str, Any] | None:
+        """Change the status; a non-empty note is stored as a comment. Returns None if not found."""
         if status not in GAP_STATUSES or not self.database_url:
-            return False
-        with self._connection(self.database_url) as conn:
+            return None
+        import psycopg
+
+        with psycopg.connect(self.database_url, connect_timeout=3) as conn:
             with conn.cursor() as cur:
                 _ensure_schema(cur)
                 cur.execute(
@@ -675,8 +740,26 @@ class KnowledgeGapTracker:
                     """,
                     (status, status, gap_id),
                 )
-                return cur.rowcount > 0
+                if cur.rowcount == 0:
+                    return None
+                note = (note or "").strip()
+                comment = _insert_comment(cur, gap_id, author or "Неизвестный автор", note) if note else None
+                return {"status": status, **({"comment": comment} if comment else {})}
 
+
+    def add_comment(self, gap_id: int, author: str, body: str) -> dict[str, Any] | None:
+        """Append an owner comment to the gap. Returns None if the gap does not exist."""
+        if not self.database_url:
+            return None
+        import psycopg
+
+        with psycopg.connect(self.database_url, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                _ensure_schema(cur)
+                cur.execute("UPDATE knowledge_gaps SET updated_at = NOW() WHERE id = %s", (gap_id,))
+                if cur.rowcount == 0:
+                    return None
+                return _insert_comment(cur, gap_id, author, body)
 
 def _run_backfill() -> None:
     parser = argparse.ArgumentParser(description="Build semantic clusters for existing MedTrust knowledge gaps")

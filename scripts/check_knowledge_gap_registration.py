@@ -1,4 +1,4 @@
-"""Live PostgreSQL smoke test for MedTrust knowledge-gap persistence.
+"""Live PostgreSQL smoke test for user-reported MedTrust knowledge-gap persistence.
 
 Run from the MedTrust project root:
     python scripts/check_knowledge_gap_registration.py
@@ -81,6 +81,7 @@ def main() -> int:
             stored = tracker.record_gap(
                 query=query,
                 reason="automated_registration_smoke_test",
+                source="user_feedback",
                 conversation_id=conversation_id,
                 query_id=query_id,
                 wiki_candidates=[

@@ -42,6 +42,10 @@ from app.services.langsmith_tracing import (
 )
 from app.services.web_search import (
     WebSearchResult,
+    _broad_search_queries,
+    _fallback_search_terms,
+    _topic_ids,
+    _intent_ids,
     has_procedure_specific_preparation_evidence,
     is_dining_query,
     is_relevant_web_result,
@@ -604,6 +608,54 @@ class RagService:
         if hints:
             return f"кафе рестораны места где поесть рядом с {' и '.join(hints)}{location_suffix}"
         return "кафе рестораны места где поесть " + aspect + location_suffix
+
+    @classmethod
+    def _web_search_query_variants(cls, query: str, limit: int = 3) -> list[str]:
+        """Build grounded query variants without performing a network search.
+
+        Retained for compatibility; the local-only query endpoint never calls it.
+        """
+        original = " ".join((query or "").split()).strip()
+        if not original:
+            return []
+        variants = [original]
+        topics = _topic_ids(original)
+        intents = _intent_ids(original)
+
+        translated = _fallback_search_terms(original)
+        if translated and translated.casefold() != original.casefold():
+            translated_topics = _topic_ids(translated)
+            translated_intents = _intent_ids(translated)
+            if topics and topics.intersection(translated_topics) and (
+                not intents or intents.intersection(translated_intents)
+            ):
+                variants.append(translated)
+
+        # Accept shared planner expansions only when they preserve both the requested
+        # clinical topic and the requested information type. This excludes unrelated
+        # generic expansions such as "dosage".
+        try:
+            broad_variants = _broad_search_queries(original)[:4]
+        except Exception:
+            broad_variants = []
+        for candidate in broad_variants:
+            candidate = " ".join(str(candidate or "").split()).strip()
+            if not candidate or candidate.casefold() in {item.casefold() for item in variants}:
+                continue
+            candidate_topics = _topic_ids(candidate)
+            candidate_intents = _intent_ids(candidate)
+            if topics:
+                grounded = bool(topics.intersection(candidate_topics)) and (
+                    not intents or bool(intents.intersection(candidate_intents))
+                )
+            else:
+                grounded = bool(cls._claim_terms(original).intersection(cls._claim_terms(candidate)))
+            if grounded:
+                variants.append(candidate)
+            if len(variants) >= max(1, min(4, limit)):
+                break
+        return variants[:max(1, min(4, limit))]
+
 
     @staticmethod
     def _wiki_document_key(doc: dict) -> tuple[str, str]:
@@ -3415,6 +3467,7 @@ class RagService:
                 "supplemental_context": bool(doc.get("supplemental_context", False)),
                 "matched_query_aspects": doc.get("_matched_query_aspects") or [question],
                 "relevance_query_aspect": doc.get("_relevance_query_aspect"),
+                "document_id": str(doc["document_id"]),
             })
         for idx, result in enumerate(web_results, start=1):
             matched_aspects = (web_result_aspects or {}).get(result.url.rstrip("/").casefold(), []) or [question]

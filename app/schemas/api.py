@@ -40,8 +40,14 @@ class GapStatusRequest(BaseModel):
     author: str | None = Field(default=None, max_length=200)
 
 
+class GapCommentRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+    # Compatibility only: the route always uses the authenticated user's name.
+    author: str | None = Field(default=None, max_length=200)
+
+
 class FeedbackRequest(BaseModel):
-    query_id: str = Field(min_length=36, max_length=36)
+    query_id: str
     rating: Literal["positive", "negative"]
     comment: str | None = Field(default=None, max_length=4000)
     reason_code: str | None = Field(default=None, max_length=64)
