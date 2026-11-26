@@ -33,22 +33,12 @@ def test_query_does_not_create_search_link_sources() -> None:
     assert "def _append_search_link_citations(" not in source
 
 
-def test_knowledge_gap_registration_remains_enabled() -> None:
-    source = RAG_SOURCE.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    answer_method = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "answer"
-    )
-    method_source = ast.get_source_segment(source, answer_method) or ""
-    assert "self.knowledge_gap_tracker.record_gap(" in method_source
-
-
 def test_answer_never_invokes_web_search_when_local_wiki_has_no_match(monkeypatch):
     from types import SimpleNamespace
 
     from app.services.rag import RagService
+    from app.services.knowledge_gap_tracker import KnowledgeGapTracker
+    from unittest.mock import Mock
 
     monkeypatch.setattr(
         "app.services.rag.get_settings",
@@ -100,7 +90,9 @@ def test_answer_never_invokes_web_search_when_local_wiki_has_no_match(monkeypatc
     service = RagService.__new__(RagService)
     service.memory = FakeMemory()
     service.contextualizer = FakeContextualizer()
-    service.knowledge_gap_tracker = SimpleNamespace(record_gap=lambda **kwargs: None)
+    service.knowledge_gap_tracker = KnowledgeGapTracker(database_url="unused")
+    service.knowledge_gap_tracker._connection = Mock(side_effect=AssertionError("Automatic gaps must not access DB"))
+    service.knowledge_gap_tracker._embed_many = Mock(side_effect=AssertionError("Automatic gaps must not call embeddings"))
     service.gigachat = ForbiddenGigaChat()
     # Even an accidentally attached client must not be called by answer().
     service.web_search = ForbiddenWebSearch()
@@ -117,6 +109,8 @@ def test_answer_never_invokes_web_search_when_local_wiki_has_no_match(monkeypatc
     assert result["attempted_web_queries"] == []
     assert result["sources"] == []
     assert result["answer_review_diagnostics"]["source_evidence_check"]["web_results_returned"] == 0
+    service.knowledge_gap_tracker._connection.assert_not_called()
+    service.knowledge_gap_tracker._embed_many.assert_not_called()
 
 
 def test_external_search_remains_only_on_the_manual_web_search_route():

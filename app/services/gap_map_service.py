@@ -268,7 +268,7 @@ class GapMapService:
         }
 
     def persist_query_result(self, result: dict[str, Any], raw_question: str) -> dict[str, Any]:
-        """Persist answerability and one automatic event per insufficient query_id."""
+        """Persist answerability diagnostics; gaps are registered only via feedback."""
         query_id = str(result.get("query_id") or "")
         conversation_id = str(result.get("conversation_id") or "") or None
         if not query_id or not result.get("query_context"):
@@ -326,49 +326,8 @@ class GapMapService:
                 """,
                 (query_id, conversation_id, sufficient, answerability_reason, Jsonb(source_ids), web_search_used),
             )
-            gap_ids: list[int] = []
-            event_id: str | None = None
-            if sufficient is False and not is_clarification:
-                rows = conn.execute(
-                    "SELECT id FROM knowledge_gaps WHERE last_query_id=%s::uuid ORDER BY id",
-                    (query_id,),
-                ).fetchall()
-                gap_ids = [int(row[0]) for row in rows]
-                if not gap_ids:
-                    # Retry the tracker once if RAG's primary write failed. This path is
-                    # only used after a completed Answerability Check, never on DB/LLM errors.
-                    try:
-                        KnowledgeGapTracker().record_gap(
-                            query=ctx["resolved_query"] or raw_question,
-                            reason=answerability_reason[:200],
-                            conversation_id=conversation_id, query_id=query_id,
-                            wiki_candidates=[], source="automatic",
-                        )
-                    except Exception:
-                        logger.exception("Retrying automatic knowledge-gap persistence failed")
-                    rows = conn.execute(
-                        "SELECT id FROM knowledge_gaps WHERE last_query_id=%s::uuid ORDER BY id",
-                        (query_id,),
-                    ).fetchall()
-                    gap_ids = [int(row[0]) for row in rows]
-                if gap_ids:
-                    reason_code = _reason_code(reasons, facet_flags)
-                    event_id = self._upsert_gap_event(
-                        conn, query_id=query_id, conversation_id=conversation_id,
-                        source="automatic", reason_code=reason_code,
-                        answerability_reason=answerability_reason,
-                        comment=None, gap_ids=gap_ids,
-                        resolved_query=ctx["resolved_query"] or raw_question,
-                        source_ids=source_ids,
-                    )
             conn.commit()
 
-        if sufficient is False and gap_ids:
-            try:
-                self.suggest_groups_for_gap_ids(gap_ids)
-            except Exception:
-                # A suggestion failure must never roll back or hide the underlying gap.
-                logger.exception("Knowledge-gap group suggestion failed")
         return {
             "query": {
                 "raw_question": ctx["raw_question"] or raw_question,
@@ -386,12 +345,10 @@ class GapMapService:
                 "web_search_used": web_search_used,
             },
             "gap": {
-                "registered": bool(event_id), "created": bool(event_id), "id": event_id,
-                "gap_ids": gap_ids, "source": "automatic" if event_id else None,
+                "registered": False, "created": False, "id": None,
+                "gap_ids": [], "source": None,
             },
-            "tracking_status": (
-                "failed" if sufficient is False and not event_id else "persisted"
-            ),
+            "tracking_status": "persisted",
         }
 
     def _upsert_gap_event(

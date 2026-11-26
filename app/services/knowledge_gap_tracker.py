@@ -1,4 +1,4 @@
-"""Persist MedTrust knowledge-gap topics without auto-merging semantic matches.
+"""Persist user-reported knowledge-gap topics without auto-merging semantic matches.
 
 Exact duplicate questions continue to use a SHA-256 fingerprint. Distinct
 questions always retain separate gap and cluster identities; vector similarity
@@ -416,6 +416,10 @@ class KnowledgeGapTracker:
         wiki_candidates: list[dict[str, Any]] | None = None,
         source: str = "automatic",
     ) -> bool:
+        # Keep the existing RAG hook compatible, but only explicit user feedback
+        # may create/update gaps. Automatic calls do not touch DB or embeddings.
+        if source != "user_feedback":
+            return False
         safe_query = _privacy_safe_query(query)
         normalized = _normalise(safe_query)
         if not normalized or not self.database_url:
