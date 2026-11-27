@@ -683,9 +683,9 @@ export default function App() {
         return;
       }
 
-      const preset =
-        questionPresets.find((item) => item.shortcut === String(index + 1)) ??
-        questionPresets[index];
+      const preset = questionPresets.find(
+        (item) => item.shortcut === String(index + 1),
+      );
 
       if (!preset) return;
 
@@ -796,9 +796,9 @@ export default function App() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               {cat.presets.map((preset) => {
-                const shortcutIndex = questionPresets.findIndex(
-                  (item) => item.id === preset.id,
-                );
+                const shortcutIndex = preset.shortcut
+                  ? Number(preset.shortcut)
+                  : 0;
 
                 return (
                   <button
@@ -808,17 +808,17 @@ export default function App() {
                       window.setTimeout(() => setSuggestion(preset.value), 0);
                     }}
                     title={
-                      shortcutIndex < 9
-                        ? `Вставить шаблон (${formatHotkey(hotkeys[`template${shortcutIndex + 1}` as keyof HotkeysConfig])})`
+                      shortcutIndex >= 1 && shortcutIndex <= 9
+                        ? `Вставить шаблон (${formatHotkey(hotkeys[`template${shortcutIndex}` as keyof HotkeysConfig])})`
                         : 'Вставить шаблон'
                     }
                     className="px-3 py-2 bg-[#EFF6FF] hover:bg-[#DBEAFE] text-[#2563EB] border border-[#BFDBFE] text-xs font-medium rounded-lg transition-colors text-left flex items-center justify-between gap-2"
                   >
                     <span>+ {preset.label}</span>
 
-                    {shortcutIndex >= 0 && shortcutIndex < 9 && (
+                    {shortcutIndex >= 1 && shortcutIndex <= 9 && (
                       <kbd className="shrink-0 px-1.5 py-0.5 rounded bg-white border border-[#BFDBFE] text-[10px] text-[#64748B]">
-                        {formatHotkey(hotkeys[`template${shortcutIndex + 1}` as keyof HotkeysConfig])}
+                        {formatHotkey(hotkeys[`template${shortcutIndex}` as keyof HotkeysConfig])}
                       </kbd>
                     )}
                   </button>

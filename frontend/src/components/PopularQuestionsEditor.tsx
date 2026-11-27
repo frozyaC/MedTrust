@@ -17,6 +17,11 @@ import {
   PopularQuestionPreset,
 } from '../types/popularQuestions';
 import { DEFAULT_POPULAR_QUESTIONS } from '../data/popularQuestions';
+import {
+  loadHotkeys,
+  formatHotkey,
+  HotkeyId,
+} from '../data/hotkeys';
 
 interface PopularQuestionsEditorProps {
   config: PopularQuestionsConfig;
@@ -36,6 +41,7 @@ export const PopularQuestionsEditor: React.FC<PopularQuestionsEditorProps> = ({
   const [draft, setDraft] = useState<PopularQuestionsConfig>(() =>
     structuredClone(config),
   );
+  const hotkeys = loadHotkeys();
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -108,11 +114,13 @@ export const PopularQuestionsEditor: React.FC<PopularQuestionsEditorProps> = ({
   const handleUpdatePreset = (
     categoryId: string,
     presetId: string,
-    patch: Partial<Pick<PopularQuestionPreset, 'label' | 'value'>>,
+    patch: Partial<Pick<PopularQuestionPreset, 'label' | 'value' | 'shortcut'>>,
   ) => {
     updateCategory(categoryId, (cat) => ({
       ...cat,
-      presets: cat.presets.map((p) => (p.id === presetId ? { ...p, ...patch } : p)),
+      presets: cat.presets.map((p) =>
+        p.id === presetId ? { ...p, ...patch } : p,
+      ),
     }));
   };
 
@@ -348,11 +356,50 @@ export const PopularQuestionsEditor: React.FC<PopularQuestionsEditorProps> = ({
                                   }}
                                   className="flex-1 px-2 py-1 text-xs border border-[#BFDBFE] rounded focus:outline-none focus:border-[#3B82F6]"
                                 />
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] uppercase font-bold text-[#94A3B8] w-[48px] shrink-0">
+                                  Хоткей
+                                </span>
+
+                                <select
+                                  value={preset.shortcut ?? ''}
+                                  onChange={(e) =>
+                                    handleUpdatePreset(cat.id, preset.id, {
+                                      shortcut: e.target.value || undefined,
+                                    })
+                                  }
+                                  className="flex-1 min-w-0 px-2 py-1 text-xs border border-[#BFDBFE] rounded bg-white focus:outline-none focus:border-[#3B82F6]"
+                                >
+                                  <option value="">Не назначен</option>
+
+                                  {Array.from({ length: 9 }, (_, index) => {
+                                    const number = String(index + 1);
+                                    const hotkeyId = `template${number}` as HotkeyId;
+
+                                    const isTaken = draft.categories.some((category) =>
+                                      category.presets.some(
+                                        (other) =>
+                                          other.id !== preset.id && other.shortcut === number,
+                                      ),
+                                    );
+
+                                    return (
+                                      <option key={number} value={number} disabled={isTaken}>
+                                        {formatHotkey(hotkeys[hotkeyId])}
+                                        {isTaken ? ' (занято)' : ''}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+
                                 <button
                                   type="button"
                                   onClick={() => setEditingPresetId(null)}
-                                  className="p-1 text-[#10B981] hover:bg-[#EFF6FF] rounded"
+                                  className="p-1 text-[#10B981] hover:bg-[#EFF6FF] rounded shrink-0"
                                   aria-label="Готово"
+                                  title="Готово"
                                 >
                                   <Check className="w-3.5 h-3.5" />
                                 </button>
